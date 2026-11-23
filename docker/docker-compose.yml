@@ -1,0 +1,82 @@
+# EduPACS Docker 部署编排（Ubuntu Server 内网）
+# ============================================================
+# 拓扑与安全模型（对齐 Windows 原生部署的边界设计）：
+#   师生/设备 ──8000(唯一入口)──► app 容器 ──反代(/ohif,/dicom-web)──► orthanc 容器:8042(内网，不发布端口)
+#   DICOM 设备 ──4242────────────►►► orthanc 容器（直推通道，按需发布）
+#
+# 关键点：
+#   1. 8042 只存在于 compose 内部网络，宿主机不发布 —— 等价于 Windows 版
+#      "RemoteAccessAllowed=false + 仅本机访问"，只是边界从"本机回环"变成"容器网络"。
+#      因此 orthanc-docker.json 里 RemoteAccessAllowed 必须为 true（app 是另一容器，
+#      对 orthanc 而言是"远程"访问，否则会被拒绝）。
+#   2. 认证凭据统一放 .env（EDUPACS_ORTHANC_USER/PASS），单点维护：
+#      orthanc 侧经 ORTHANC__REGISTERED_USERS 环境变量注入（官方镜像支持），
+#      app 侧经 ORTHANC_AUTH_USER/PASS 注入（main.py 原生支持）。
+#      改密后 `docker compose up -d` 重建两个容器即生效。
+#   3. 无 build: 段 —— 镜像由 docker/build-offline-images.sh 预构建并 save 成离线包，
+#      内网机只需 docker load，compose 文件在有网/离线两侧通用。
+#   4. 数据持久化两个 volume：orthanc-storage（影像+索引）、app-data（SQLite+密钥），
+#      内置备份工具已随 app 镜像分发并挂载这两个卷，可执行加密备份/恢复；
+#      归档默认落宿主机 ./backups（BACKUP_DIR 可指向 NFS/共享目录实现异机备份）。
+#
+# 常用命令：
+#   docker compose up -d          # 启动
+#   docker compose ps            # 状态
+#   docker compose logs -f app   # 看应用日志
+#   docker compose down          # 停止（volume 保留，数据不丢）
+#
+# 部署后冒烟（32 项）：
+#   docker compose exec app python tools/smoke_test.py \
+#     --base http://127.0.0.1:8000 --orthanc http://orthanc:8042 \
+#     --orthanc-user "$EDUPACS_ORTHANC_USER" --orthanc-pass "$EDUPACS_ORTHANC_PASS"
+#   （凭据即 .env 中的值）
+
+name: edupacs
+
+services:
+  orthanc:
+    image: ${ORTHANC_IMAGE:-orthancteam/orthanc:26.9.1}
+    container_name: edupacs-orthanc
+    restart: unless-stopped
+    ports:
+      - "4242:4242"          # DICOM 设备直推；8042 不发布（仅容器网络内可达）
+    volumes:
+      - ./orthanc-docker.json:/etc/orthanc/orthanc.json:ro
+      - orthanc-storage:/var/lib/orthanc/db
+    environment:
+      ORTHANC__REGISTERED_USERS: '{"${EDUPACS_ORTHANC_USER}": "${EDUPACS_ORTHANC_PASS}"}'
+    # 就绪判定统一由 app 服务的 /api/orthanc/health 承担（带 Basic 认证探测
+    # Orthanc /system），不依赖 orthanc 镜像内是否装有 nc/wget。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    image: ${EDUPACS_APP_IMAGE:-edupacs-app:1.0.0}
+    container_name: edupacs-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"          # 师生唯一入口（教学系统 + OHIF 阅片反代）
+    environment:
+      ORTHANC_URL: http://orthanc:8042
+      ORTHANC_AUTH_USER: ${EDUPACS_ORTHANC_USER}
+      ORTHANC_AUTH_PASS: ${EDUPACS_ORTHANC_PASS}
+    volumes:
+      - app-data:/edu-pacs/app/data
+      # Orthanc 影像与索引共享卷：备份工具必须读到它，否则 .edubak 里没有影像
+      - orthanc-storage:/edu-pacs/orthanc/storage
+      # 加密归档落宿主机；BACKUP_DIR 指向 NFS/共享目录即为异机备份目的地
+      - ${BACKUP_DIR:-./backups}:/edu-pacs/backups
+    depends_on:
+      - orthanc
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  orthanc-storage:
+  app-data:

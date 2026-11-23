@@ -1,0 +1,31 @@
+{
+  "Name": "EduPACS",
+  "DicomAet": "EDUPACS",
+  "DicomPort": 4242,
+  "HttpPort": 8042,
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+  "StrictAet": false,
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "Ssl": false
+  },
+  "OHIF": {
+    "DataSource": "dicom-web"
+  },
+  "Plugins": [
+    "/usr/share/orthanc/plugins/libOrthancDicomWeb.so",
+    "/usr/share/orthanc/plugins/libOrthancExplorer2.so",
+    "/usr/share/orthanc/plugins/libOrthancGdcm.so",
+    "/usr/share/orthanc/plugins-available/libOrthancOHIF.so"
+  ],
+  "OrthancExplorer2": {
+    "Enable": true,
+    "IsDefaultOrthancUI": true
+  },
+  "DicomModalities": {}
+}

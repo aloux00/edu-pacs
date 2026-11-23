@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+requests>=2.31
+pydicom>=2.4        # 上传脱敏（必需）
+numpy>=1.26         # 样例数据生成 + 图片转 DICOM
+openpyxl>=3.1       # 字典管理 xlsx 模板/导入/导出
+Pillow>=10.0        # 图片病例导入（jpg/png 转 DICOM）
+cryptography

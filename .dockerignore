@@ -1,0 +1,17 @@
+# 与 Windows 原生双轨部署对照（此文件保留在仓库，构建镜像时可忽略）
+.git
+.venv
+.temp
+deploy
+docs
+orthanc/storage
+orthanc/plugins
+orthanc/*.exe
+app/data
+app/__pycache__
+app/backend/__pycache__
+tools/*.pyc
+docker
+*.zip
+*.tar
+*.tar.gz

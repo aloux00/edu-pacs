@@ -1,0 +1,67 @@
+EduPACS 教学病例库系统 部署包
+================================
+
+一、这是什么
+  基于 Orthanc 1.13.0（DICOM 存储 + DICOMweb）+ OHIF Viewer 3.13（官方 OrthancOHIF 插件内嵌）
+  + FastAPI/SQLite 教学应用层的一体化医学影像教学平台，满足约 100 名师生内网使用。
+  内置：上传即脱敏、盲读模式、教学问答与批阅、学习打卡、学情统计、
+  字典管理（系统/模态/难度/疾病名称，xlsx 导入）、远程 PACS 节点管理与拉取导入、
+  图片病例导入（jpg/png 论文截图转 DICOM 教学序列）、
+  账号批量管理（xlsx 导入 + 勾选批量删除）。
+  安全架构：师生只访问 8000 端口，OHIF/DICOMweb 由教学系统反向代理并自动附带认证；
+  Orthanc 8042 已启用 HTTP 认证且仅限本机访问，DICOM 4242 通道不受影响。
+
+二、本包内容
+  EduPACS启动器.bat  【推荐】双击打开启动器（原生 exe 优先，找不到时回退 PowerShell 版）
+  EduPACS启动器.exe  原生 C 语言启动器（193KB 静态链接无依赖，赛博朋克 HUD 界面，
+                    内嵌多尺寸应用图标，支持 --status/--start/--stop）
+  orthanc/          Orthanc 服务端（主程序 + 4 个官方插件 + 配置 + 影像存储，含演示病例）
+  app/              教学系统后端 + 前端（SPA 纯静态，无外网依赖）+ 应用数据库（含演示账号与病例）
+  tools/            合成 DICOM 生成器、样例导入脚本、56 个演示 DICOM、32 项冒烟测试
+  scripts/          install.ps1 一键安装器（建 venv+依赖/防火墙/快捷方式/开机自启）
+                    + launcher.ps1 图形启动器 / start_all.ps1 启动 / stop_all.ps1 安全停止
+  docker/           Docker 双轨方案：Dockerfile、docker-compose.yml、Orthanc 容器配置、
+                    离线镜像包制作脚本 build-offline-images.sh（产物在开发机 deploy/ 下另行分发）
+                    与内网一键部署脚本 deploy-offline.sh，详见手册 4.5 节
+  docs/             部署与使用手册.md + .html（完整部署/迁移/脱敏/字典/远程节点/Ubuntu apt 与 Docker 双轨/运维/FAQ）
+  requirements.txt  Python 依赖清单（fastapi/pydicom/numpy/openpyxl/Pillow 等）
+  requirements.lock.txt  全量版本锁定（复现环境用）
+  wheels/               Windows 64 位 + Python 3.12 全量离线依赖（真·离线安装，无需联网）
+
+三、快速部署到内网服务器（Windows）
+  1. 解压本包到服务器（如 D:\edu-pacs）
+  2. 安装 Python 3.12（64 位）后，在包根目录执行一键安装器（自动建 .venv 并优先使用随包
+     wheels 完全离线安装；可选 -WithFirewall 防火墙 / -WithShortcuts 桌面快捷方式 / -WithAutostart 开机自启）：
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
+     手工等价：python -m venv .venv
+                .venv\Scripts\pip install --no-index --find-links wheels -r requirements.lock.txt
+  3. 双击 EduPACS启动器.bat，点「一键启动」
+     （无图形界面环境可运行 scripts\start_all.ps1）
+  4. 浏览器打开 http://<服务器IP>:8000（启动器窗口底部会直接显示局域网地址）
+      默认管理员 admin / admin123、演示教师 teacher01 / teach123 —— **首次登录强制修改密码**（弹窗不可跳过）
+      演示学生 st001~st200，密码 stXXX@pass（演示账号，不强制改密）
+  5. 开放防火墙端口：8000（教学系统与阅片，师生仅需此端口）、4242（DICOM 设备推送，可选）；
+     8042 无需对内网开放（仅本机，HTTP 已启用认证，账号密码见 orthanc\orthanc.json）
+
+四、备份与恢复（内置加密备份系统）
+  管理员登录后「备份恢复」页：立即备份（AES-256-GCM，进度条实时）/ 归档列表与校验 /
+  恢复向导（干跑分析→命令行正式恢复）/ 目的地配置（同机 + 异机 UNC/NFS；每次备份写入一个目的地，两份请分别执行）。
+  命令行：tools\backup.py backup|list|verify|restore|prune（计划任务定时备份示例见手册 10.1 节）。
+  备份内容：app.db + secret.key + orthanc.json（远程节点）+ Orthanc 索引 + 全部影像；
+  备份密码 ≥8 位且独立于登录密码，丢失无法恢复，请妥善保管。
+  冒烟测试 32 项（含备份创建/校验/错误密码拒绝/沙箱恢复子流程）。
+  传统手工备份仍有效：每日备份 orthanc\storage\ 与 app\data\ 两处亦可完整恢复；
+  停止服务用 scripts\stop_all.ps1（安全停止：只停本项目进程，不误杀同机其它服务）。
+
+五、Linux 服务器双轨（Ubuntu）
+  A. 原生 apt 方案（不依赖 Docker）：手册 4.4 节
+  B. Docker 离线镜像包（推荐快速复制多台时用）：开发机运行 docker/build-offline-images.sh
+     产出 EduPACS-Docker离线镜像包-<日期>.tar.gz（另分分发）；内网 Ubuntu Server 解压后
+     `sudo bash deploy-offline.sh` 一条命令完成部署；安全边界与 Windows 版对齐
+     （8042 仅容器网络内部可达 + 认证，师生仍只访问 8000）。详见手册 4.5 节。
+
+六、详细说明
+  见 docs\部署与使用手册.md / .html（第 5 节影像接入、第 6 节字典管理、第 7 节远程节点、10.1 节备份恢复）
+
+
+AI生成

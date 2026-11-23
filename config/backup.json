@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "destinations": [
+    {
+      "id": "local",
+      "label": "本机备份目录",
+      "path": "backups",
+      "keep": 7,
+      "enabled": true,
+      "type": "path"
+    },
+    {
+      "id": "offsite",
+      "label": "异机备份（网络路径，请改成真实 UNC/NFS 后启用）",
+      "path": "\\\\FILESERVER\\EduPACS备份",
+      "keep": 14,
+      "enabled": false,
+      "type": "path"
+    }
+  ]
+}

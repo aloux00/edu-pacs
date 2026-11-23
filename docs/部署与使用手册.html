@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EduPACS 教学病例库系统 — 部署与使用手册</title>
+<style>
+  body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; color: #1f2937;
+         max-width: 900px; margin: 0 auto; padding: 32px 24px 80px; line-height: 1.75; }
+  h1 { font-size: 26px; border-bottom: 3px solid #0f766e; padding-bottom: 10px; color: #0f766e; }
+  h2 { font-size: 20px; color: #0f766e; margin-top: 36px; border-left: 5px solid #0f766e; padding-left: 12px; }
+  h3 { font-size: 16px; margin-top: 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+  th { background: #f0fdfa; color: #115e59; }
+  tr:nth-child(even) { background: #fafafa; }
+  code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px;
+         font-family: Consolas, monospace; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 8px;
+        overflow-x: auto; line-height: 1.5; }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  blockquote { border-left: 4px solid #0ea5e9; margin: 14px 0; padding: 8px 16px;
+               background: #f0f9ff; color: #0c4a6e; }
+  a { color: #0f766e; }
+  .meta { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
+</style>
+</head>
+<body>
+<div class="meta">生成时间：2026-11-20 · EduPACS 教学病例库系统 · 双击即可离线阅读</div>
+<h1>EduPACS 教学病例库系统 — 部署与使用手册</h1>
+<blockquote>
+<p>基座：<strong>Orthanc 1.13.0</strong>（DICOM 存储 + DICOMweb）+ <strong>OHIF Viewer</strong>（官方 OrthancOHIF 插件内嵌）+ <strong>FastAPI/SQLite 教学应用层</strong>
+规模：满足约 100 名师生并发的院内内网教学场景（SQLite 单机即可承载，后续如需可平滑升级 PostgreSQL/MySQL）</p>
+</blockquote>
+<hr />
+<h2>1. 系统架构</h2>
+<pre><code>浏览器（师生，约100人）—— 只访问 8000 端口
+   │  http://&lt;服务器IP&gt;:8000        教学病例库系统（登录/病例管理/问答/统计）
+   │       ├── /ohif/* 、/dicom-web/*   FastAPI 反向代理 → 本机 Orthanc（自动附带认证）
+   │       │     └── 内嵌 OHIF Viewer iframe：同源 /ohif/viewer?StudyInstanceUIDs=...
+   │       └── REST API /api/*      FastAPI 应用层（SQLite 存账号/病例/答卷/记录）
+   │
+Orthanc（http 8042 仅本机可达 / DICOM 4242）
+   ├── HTTP 认证已启用（服务账号见 orthanc.json RegisteredUsers，默认 edupacs_service）
+   ├── DICOMweb（QIDO-RS / WADO-RS / STOW-RS）→ 供 OHIF 取图（经 8000 反代）
+   ├── OrthancOHIF 插件 → 直接托管 OHIF 阅片前端
+   └── storage/ 目录 → DICOM 影像文件 + SQLite 索引
+</code></pre>
+<p>各组件职责：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>端口</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Orthanc</td>
+<td>8042 (HTTP，仅本机) / 4242 (DICOM)</td>
+<td>医学影像存储、DICOMweb 服务、托管 OHIF 阅片页；HTTP 已启用认证</td>
+</tr>
+<tr>
+<td>OHIF Viewer</td>
+<td>经 8000 反代访问</td>
+<td>浏览器内专业阅片（窗宽窗位/缩放/测量/标注）</td>
+</tr>
+<tr>
+<td>FastAPI 教学应用</td>
+<td>8000</td>
+<td>账号权限、病例管理、教学问答、学习记录、统计看板；并反向代理 OHIF/DICOMweb 到 Orthanc</td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td>app/data/app.db</td>
+<td>应用层数据库（用户、病例元数据、答卷、学习记录）</td>
+</tr>
+</tbody>
+</table>
+<h2>2. 目录结构（开发机视角；部署 zip 不含 .venv/deploy/.git，见第 4 节）</h2>
+<pre><code>edu-pacs/
+├── orthanc/
+│   ├── Orthanc.exe                # Orthanc 主程序 (1.13.0，取自官方安装包)
+│   ├── orthanc.json               # 配置（端口/插件/存储）
+│   ├── plugins/                   # OrthancDicomWeb / OrthancOHIF(含OHIF 3.13) / OrthancExplorer2 / ServeFolders
+│   └── storage/                   # DICOM 数据与索引（务必纳入备份）
+├── app/
+│   ├── backend/main.py            # 教学系统后端（FastAPI）
+│   ├── static/                    # 前端 SPA（纯静态，离线可用）
+│   └── data/                      # app.db 应用数据库 + secret.key（务必纳入备份；部署包不含 secret.key，首次启动自动生成各自密钥）
+├── tools/
+│   ├── gen_sample_data.py         # 合成教学 DICOM 生成器
+│   ├── import_cases.py            # 样例病例一键导入脚本
+│   ├── backup.py                 # 备份/恢复命令行工具（AES-256-GCM，见 10.1 节）
+│   ├── smoke_test.py              # 32 项端到端冒烟测试（含备份子流程）
+│   └── sample_dicom/              # 6 个合成教学病例（56 个 DICOM 文件）
+├── EduPACS启动器.bat            # 【推荐】双击启动图形化启动器
+├── config/
+│   └── backup.json                # 备份目的地配置（同机/异机，网页端可编辑）
+├── backups/                       # 默认备份归档目录（.edubak 加密归档，务必纳入异机保存）
+├── scripts/
+│   ├── install.ps1               # 【推荐】Windows 离线一键安装器（建 venv+依赖/防火墙/快捷方式/自启）
+│   ├── launcher.ps1               # 图形启动器（状态灯 / 一键启停 / 打开页面）
+│   ├── start_all.ps1              # 命令行一键启动（无界面；-NoBrowser 供自启任务用）
+│   └── stop_all.ps1               # 命令行一键停止
+├── docker/                        # Docker 双轨方案（Ubuntu Server 离线镜像化部署）
+│   ├── Dockerfile                 # 应用层镜像（FastAPI + 前端 + 冒烟工具）
+│   ├── docker-compose.yml         # orthanc + app 两服务编排（8042 不对外发布）
+│   ├── orthanc-docker.json         # Orthanc 容器配置（RemoteAccessAllowed=true，容器网络内通信）
+│   ├── build-offline-images.sh    # 有网机制作离线镜像包 → deploy/EduPACS-Docker离线镜像包-*.tar.gz
+│   ├── deploy-offline.sh          # 内网一键部署脚本（load/.env/up/就绪等待/信息汇总）
+│   └── README-docker.md           # Docker 部署快速说明（随离线包分发）
+├── deploy/
+│   ├── OrthancInstaller-Win64-26.9.1.exe   # 官方安装器备用（内含全部插件，重装/新增节点用）
+│   └── EduPACS-教学病例库-部署包.zip       # 整包分发包
+├── docs/
+│   ├── 部署与使用手册.md
+│   └── reference-orthanc-full.json         # 官方完整参考配置
+├── requirements.txt               # Python 依赖清单
+└── .venv/                         # Python 虚拟环境（迁移时可用 requirements 重建）
+</code></pre>
+<h2>3. 快速启动（当前演示环境）</h2>
+<h3>3.1 图形启动器（推荐，日常运维用这个）</h3>
+<p><strong>原生版（v4 起默认，赛博朋克 HUD 界面）</strong>：<code>EduPACS启动器.bat</code> 现在优先启动原生 C 语言启动器 <code>EduPACS启动器.exe</code>（193KB 静态链接，无依赖，启动即开、检测在后台线程、界面不卡顿；深色 HUD 网格背景、霓虹状态灯、扫描线动画、悬停高亮按钮，窗口与任务栏图标为内嵌的 24/32/48/64/128/256 六尺寸应用图标）；找不到 exe 时自动回退到 PowerShell 版 <code>scripts\launcher.ps1</code>。功能一致：</p>
+<ol>
+<li>双击项目根目录的 <strong><code>EduPACS启动器.bat</code></strong>（或直接双击 <code>EduPACS启动器.exe</code>），弹出启动器窗口</li>
+<li>窗口内两个状态灯每 2 秒后台刷新显示服务状态：</li>
+<li><code>● Orthanc</code> — DICOM 4242 / HTTP 8042 / OHIF 阅片（含认证状态识别）</li>
+<li><code>● 教学系统</code> — HTTP 8000 / 账号·病例·问答·统计</li>
+<li>点 <strong>「一键启动」</strong>：自动拉起两个服务，就绪后自动打开浏览器进入系统</li>
+<li>点 <strong>「一键停止」</strong>：安全停止两个服务（学生/教师将暂时无法访问）</li>
+<li>另有「打开教学系统」「打开 Orthanc 后台」两个快捷按钮；窗口底部显示<strong>本机与局域网访问地址</strong>（可直接念给学生/教师）</li>
+</ol>
+<blockquote>
+<p>说明：启动器只管理本项目目录下的进程，点「关闭」只关界面、<strong>不会</strong>停服务；要真正停服务请点「一键停止」。</p>
+<p>原生版命令行模式（供运维脚本调用）：<code>EduPACS启动器.exe --status</code> / <code>--start</code> / <code>--stop</code>（退出码 0=就绪/成功）。注意：PowerShell 里用 <code>Start-Process -Wait</code> 调 <code>--start</code> 会因宿主等待后代服务进程而挂起，请改用 <code>&amp; $exe --start</code> 后接 <code>--status</code> 轮询；<code>--status</code>/<code>--stop</code> 可放心 <code>-Wait</code>。</p>
+</blockquote>
+<h3>3.2 命令行方式（无界面，适合远程桌面/脚本调用）</h3>
+<ol>
+<li>运行 <code>scripts\start_all.ps1</code>（右键 → 使用 PowerShell 运行）</li>
+<li>浏览器访问 <code>http://127.0.0.1:8000</code></li>
+<li>停止用 <code>scripts\stop_all.ps1</code>（<strong>安全停止</strong>：只结束命令行可确认属于本项目的 Orthanc/python 进程，不会误杀同机其它项目的同名服务；发现 8000/8042 被他人进程占用时只报告、不动手）</li>
+</ol>
+<h3>3.3 登录账号</h3>
+<ul>
+<li>管理员：<code>admin / admin123</code></li>
+<li>演示教师：<code>teacher01 / teach123</code></li>
+<li>演示学生：<code>st001 ~ st200</code>，密码 <code>stXXX@pass</code>（如 st001 → <code>st001@pass</code>）</li>
+<li>首次空库可导入演示数据：<code>.\venv\Scripts\python tools\import_cases.py</code></li>
+</ul>
+<h2>4. 迁移到内网服务器（Windows）</h2>
+<h3>4.1 环境要求</h3>
+<ul>
+<li>Windows Server 2016+ / Windows 10+（64 位）；Linux 服务器（Ubuntu 20.04+）部署见 4.4 节</li>
+<li>Python 3.12+（仅应用层需要；Orthanc 为独立 exe 无需安装；3.10/3.11 不满足 tarfile 安全过滤要求）</li>
+<li>开放端口：8000（教学系统与阅片入口，师生仅需此端口）、4242（DICOM，影像设备推送用，可按需开放）；<strong>8042 仅服务器本机可达</strong>（HTTP 已启用认证，师生经 8000 反代访问阅片器，无需对内网开放）</li>
+</ul>
+<h3>4.2 部署步骤（推荐用一键安装器）</h3>
+<ol>
+<li>整包拷贝 <code>edu-pacs/</code> 目录到服务器（如 <code>D:\edu-pacs</code>）</li>
+<li>在项目根目录运行安装器（自动检测 Python → 建 <code>.venv</code> → 安装锁定版本依赖；幂等可重复执行）：
+   <code>powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1</code>
+   可选开关：<code>-WithFirewall</code>（放行 8000/4242 入站，需管理员）、<code>-WithShortcuts</code>（创建桌面快捷方式）、
+   <code>-WithAutostart</code>（注册开机自启计划任务，不弹浏览器）、<code>-IndexUrl &lt;镜像源&gt;</code>、<code>-Wheels &lt;目录&gt;</code>（完全离线时用本地 wheels）。<blockquote>
+<p>手工等价步骤：<code>python -m venv .venv</code> → <code>.venv\Scripts\pip install -r requirements.lock.txt -i https://mirrors.aliyun.com/pypi/simple</code></p>
+</blockquote>
+</li>
+<li>在项目根目录双击 <code>EduPACS启动器.bat</code> → 点「一键启动」（或运行 <code>scripts\start_all.ps1</code>）</li>
+<li>首次运行自动创建默认管理员 <code>admin / admin123</code>，<strong>首次登录强制修改密码</strong>（弹窗不可跳过）</li>
+<li>教师上传病例 → 发布 → 学生学习（见第 9 节教学流程）</li>
+<li>交付/升级前后可运行端到端冒烟测试（32 项断言：脱敏零泄漏/盲读解锁/批阅/统计/权限隔离/<strong>阅片代理写保护</strong>）：
+   <code>powershell
+   .venv\Scripts\python tools\smoke_test.py --orthanc-user edupacs_service --orthanc-pass &lt;服务账号密码，见 orthanc\orthanc.json&gt;</code></li>
+</ol>
+<h3>4.3 开机自启（可选）</h3>
+<p><strong>方式 A（推荐，免装工具）</strong>：安装时加 <code>-WithAutostart</code>，注册计划任务 <code>EduPACS-Autostart</code>，开机自动执行 <code>scripts\start_all.ps1 -NoBrowser</code>（后台拉起两服务，不弹浏览器窗口）。</p>
+<p><strong>方式 B</strong>：用 <strong>WinSW</strong> 或 <strong>NSSM</strong> 把两条命令注册为服务：
+- <code>orthanc\Orthanc.exe orthanc\orthanc.json</code>（工作目录 <code>orthanc\</code>）
+- <code>.venv\Scripts\python.exe -m uvicorn app.backend.main:app --host 0.0.0.0 --port 8000</code>（工作目录项目根）</p>
+<h3>4.4 Linux（Ubuntu）服务器部署</h3>
+<blockquote>
+<p>以 <strong>Ubuntu 24.04 LTS</strong> 原生 apt 方案为例（不依赖 Docker）。Ubuntu 22.04 步骤相同，但 apt 里可能没有 <code>orthanc-ohif</code> 插件包，需先 <code>apt policy orthanc-ohif</code> 确认，没有则改用 24.04 或独立部署 OHIF；各包版本以实际查询为准（本系统针对 Orthanc 1.13 开发并实测，旧版本 API 行为可能有差异，部署后务必跑第 6 步冒烟验证）。</p>
+</blockquote>
+<p><strong>① 安装 Orthanc 与插件（系统源自带，无需编译）</strong></p>
+<pre><code class="language-bash">sudo apt update
+sudo apt install -y orthanc orthanc-dicomweb orthanc-ohif
+</code></pre>
+<p>Debian 系打包会把插件配置放在 <code>/etc/orthanc/</code> 下并随主服务加载；若插件未自动生效，把对应配置并入 <code>/etc/orthanc/orthanc.json</code> 的 <code>Plugins</code> 字段后重启服务。</p>
+<p><strong>② 修改 <code>/etc/orthanc/orthanc.json</code> 关键安全项（对齐第 10 节）</strong></p>
+<pre><code class="language-json">&quot;AuthenticationEnabled&quot;: true,
+&quot;RemoteAccessAllowed&quot;: false,
+&quot;RegisteredUsers&quot;: { &quot;edupacs_service&quot;: &quot;改成强密码&quot; },
+&quot;DicomPort&quot;: 4242,
+&quot;HttpPort&quot;: 8042
+</code></pre>
+<p>数据目录默认在 <code>/var/lib/orthanc/</code>（index 数据库与 storage 影像），确认所在分区容量充足后：<code>sudo systemctl restart orthanc</code>。验证：<code>curl -u edupacs_service:密码 http://127.0.0.1:8042/system</code> 应返回 200；不带认证应返回 401。</p>
+<p><strong>③ 部署教学系统</strong></p>
+<pre><code class="language-bash">sudo mkdir -p /opt/edu-pacs &amp;&amp; cd /opt/edu-pacs
+# 上传源码（git clone 或解包，不含 orthanc/ 目录——Linux 用系统包的 Orthanc）
+sudo python3 -m venv .venv
+sudo .venv/bin/pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple
+sudo chown -R edu-pacs:edu-pacs /opt/edu-pacs   # 建议建专用账号并仅授 app/data 与 .temp 写权限
+</code></pre>
+<p><strong>④ systemd 服务 <code>/etc/systemd/system/edu-pacs.service</code></strong></p>
+<pre><code class="language-ini">[Unit]
+Description=EduPACS Teaching Case Library
+After=network.target orthanc.service
+
+[Service]
+Type=simple
+User=edu-pacs
+WorkingDirectory=/opt/edu-pacs
+Environment=ORTHANC_URL=http://127.0.0.1:8042
+Environment=ORTHANC_AUTH_USER=edupacs_service
+Environment=ORTHANC_AUTH_PASS=与 orthanc.json 一致
+ExecStart=/opt/edu-pacs/.venv/bin/python -m uvicorn app.backend.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+<blockquote>
+<p><strong>重要</strong>：Linux 下 Orthanc 配置在 <code>/etc/orthanc/</code>，应用层读不到项目内 <code>orthanc/orthanc.json</code>，<strong>必须</strong>用 <code>ORTHANC_AUTH_USER/PASS</code> 环境变量传服务账号（代码已支持）；<code>ORTHANC_URL</code> 亦已支持。</p>
+</blockquote>
+<pre><code class="language-bash">sudo systemctl daemon-reload &amp;&amp; sudo systemctl enable --now edu-pacs
+journalctl -u edu-pacs -f        # 看日志
+</code></pre>
+<p><strong>⑤ 防火墙</strong></p>
+<pre><code class="language-bash">sudo ufw allow 8000/tcp          # 教学系统与阅片（师生唯一入口）
+sudo ufw allow 4242/tcp          # DICOM 设备直推（按需）
+# 8042 不要开放：仅本机可达，师生经 8000 反代访问阅片
+</code></pre>
+<p><strong>⑥ 部署后验证（必做）</strong></p>
+<pre><code class="language-bash">.venv/bin/python tools/smoke_test.py --orthanc-user edupacs_service --orthanc-pass '服务账号密码'
+</code></pre>
+<p>32 项全部通过即可交付（含脱敏零泄漏、反代写保护、权限隔离）。</p>
+<p><strong>⑦ 数据迁移（Windows → Ubuntu）</strong></p>
+<ol>
+<li>两侧都停服务；打包 Windows 机的 <code>orthanc\storage\</code> 与 <code>app\data\</code></li>
+<li>Orthanc 侧：把 storage 内容放到 Ubuntu 的 Orthanc 数据目录（注意 Ubuntu 打包把 index 与影像的路径拆分为 <code>/var/lib/orthanc/</code> 下不同子目录，需对照 <code>/etc/orthanc/orthanc.json</code> 的 <code>StorageDirectory</code>/<code>DatabaseDirectory</code> 放置）；Orthanc 索引库跨平台、自动升级 schema</li>
+<li>应用侧：<code>app/data/app.db</code> 原样放到 <code>/opt/edu-pacs/app/data/</code>（SQLite 跨平台）；<strong>secret.key 不要拷贝</strong>，首次启动自动生成（旧 token 全部失效，重新登录即可）</li>
+<li>先启 Orthanc → 再启教学系统 → 跑第 ⑥ 步冒烟 → 浏览器抽查一个病例的 OHIF 阅片</li>
+</ol>
+<p><strong>⑧ 日常运维</strong></p>
+<ul>
+<li>备份：cron 每日打包 <code>/var/lib/orthanc/</code> 与 <code>/opt/edu-pacs/app/data/</code>（app.db 建议用 <code>sqlite3 app.db ".backup ..."</code> 热备）</li>
+<li>升级：<code>git pull</code> → <code>pip install -r requirements.txt</code> → <code>systemctl restart edu-pacs</code></li>
+<li>如需 HTTPS/公网：前置 nginx 反代 8000 并加 TLS，后端不动</li>
+</ul>
+<h3>4.5 Docker 部署（Ubuntu Server，镜像化双轨方案）</h3>
+<blockquote>
+<p>与 4.4 的关系：<strong>两条 Linux 部署路线并存</strong>。4.4 原生 apt 方案适合「不装 Docker 的服务器」；
+4.5 Docker 方案适合「追求环境一致、快速复制到多台服务器」的场景，交付物是<strong>离线镜像包</strong>
+（内网无外网也能部署）。Windows zip 包与 Docker 包为双轨并存，应用代码与数据结构完全一致，可互相迁移。</p>
+</blockquote>
+<p><strong>① 离线镜像包制作（在有外网、装有 Docker 的 Linux 机器上执行一次）</strong></p>
+<pre><code class="language-bash">bash docker/build-offline-images.sh
+# 产物：deploy/EduPACS-Docker离线镜像包-&lt;日期&gt;.tar.gz（两个镜像 + compose + 配置 + 部署脚本）
+# 可用环境变量覆盖：ORTHANC_IMAGE / APP_IMAGE / PIP_INDEX（默认清华源）
+</code></pre>
+<p>镜像构成：<code>orthancteam/orthanc:26.9.1</code>（官方镜像，内置 DicomWeb / OHIF / Explorer2 插件，配置节出现即自动启用，与 Windows 版插件组合对齐）+ <code>edupacs-app:1.0.0</code>（FastAPI 后端 + 纯静态前端，依赖按 requirements.lock.txt 全量锁定）。</p>
+<p><strong>② 内网部署（Ubuntu Server 24.04 LTS，需已安装 docker + compose 插件）</strong></p>
+<pre><code class="language-bash">tar xzf EduPACS-Docker离线镜像包-*.tar.gz -C edupacs-docker &amp;&amp; cd edupacs-docker
+sudo bash deploy-offline.sh        # 一条命令完成
+</code></pre>
+<p>脚本自动：导入镜像 → 生成随机 Orthanc 服务账号密码写入 <code>.env</code>（权限 600）→ <code>docker compose up -d</code> → 等待就绪 → 打印访问地址与冒烟测试命令。幂等可重复执行。</p>
+<p><strong>③ 安全模型（与 Windows 原生版对齐）</strong></p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>Docker 方案</th>
+<th>Windows 原生方案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>师生入口</td>
+<td>仅 8000（app 容器）</td>
+<td>仅 8000</td>
+</tr>
+<tr>
+<td>Orthanc 8042</td>
+<td>不发布端口，仅 compose 内部网络，跨容器访问仍需 Basic 认证</td>
+<td><code>RemoteAccessAllowed=false</code>，仅本机回环 + 认证</td>
+</tr>
+<tr>
+<td>DICOM 4242</td>
+<td>按需发布（设备直推）</td>
+<td>按需开放防火墙</td>
+</tr>
+<tr>
+<td>凭据</td>
+<td><code>.env</code> 单点维护（600 权限）</td>
+<td><code>orthanc\orthanc.json</code></td>
+</tr>
+<tr>
+<td>数据</td>
+<td>volume <code>edupacs_orthanc-storage</code> / <code>edupacs_app-data</code></td>
+<td><code>orthanc\storage\</code> / <code>app\data\</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>注意：容器网络里 app 对 orthanc 是「远程」访问，故 <code>docker/orthanc-docker.json</code> 中 <code>RemoteAccessAllowed</code> 必须为 <code>true</code>；安全边界由「宿主机不发布 8042 端口 + 认证」承担，效果等价。</p>
+</blockquote>
+<p><strong>④ 部署后必做：冒烟测试（32 项）</strong></p>
+<pre><code class="language-bash">U=$(grep ^EDUPACS_ORTHANC_USER= .env | cut -d= -f2-)
+P=$(grep ^EDUPACS_ORTHANC_PASS= .env | cut -d= -f2-)
+docker compose exec app python tools/smoke_test.py \
+  --base http://127.0.0.1:8000 --orthanc http://orthanc:8042 \
+  --orthanc-user &quot;$U&quot; --orthanc-pass &quot;$P&quot;
+</code></pre>
+<p><strong>⑤ 数据迁移（Windows ↔ Docker）</strong></p>
+<ol>
+<li>Windows 侧停服务；打包 <code>orthanc\storage\</code>（去掉 <code>-wal/-shm</code>）与 <code>app\data\app.db</code>（secret.key 不拷贝）</li>
+<li>拷入服务器后：<code>docker compose stop</code></li>
+<li>导入 volume：<code>docker run --rm -v edupacs_orthanc-storage:/d -v $PWD:/b alpine sh -c "cp -r /b/storage/. /d/"</code>
+   与 <code>docker run --rm -v edupacs_app-data:/a -v $PWD:/b alpine sh -c "cp /b/app.db /a/"</code></li>
+<li><code>docker compose up -d</code> → 跑 ④ 冒烟 → 浏览器抽查阅片</li>
+</ol>
+<p><strong>⑥ 日常运维</strong></p>
+<ul>
+<li>状态/日志：<code>docker compose ps</code> / <code>docker compose logs -f app</code></li>
+<li>备份（cron）：<code>docker run --rm -v edupacs_orthanc-storage:/d -v edupacs_app-data:/a -v $PWD:/b alpine tar czf /b/edupacs-backup-$(date +%F).tgz /d /a</code></li>
+<li>升级：新离线包 <code>docker load</code> → <code>.env</code> 不动 → <code>docker compose up -d</code>（volume 自动沿用）</li>
+<li>改服务账号密码：改 <code>.env</code> → <code>docker compose up -d</code>（两个容器按新凭据重建）</li>
+<li>防火墙：<code>ufw allow 8000/tcp &amp;&amp; ufw allow 4242/tcp</code></li>
+</ul>
+<p>更多排错与细节见离线包内 <code>README-Docker部署说明.md</code>（源文件为 <code>docker/README-docker.md</code>）。</p>
+<h2>5. 影像接入方式</h2>
+<table>
+<thead>
+<tr>
+<th>方式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>教学系统网页上传</td>
+<td>教师「上传病例」页选择 .dcm 多文件或 zip（推荐，自动登记病例）</td>
+</tr>
+<tr>
+<td><strong>图片上传（新）</strong></td>
+<td>支持 jpg/png/bmp/webp 等图片（适合从论文/网络收集的少见病例截图），自动合成 DICOM 教学序列（模态 OT），脱敏入库后可在 OHIF 阅片</td>
+</tr>
+<tr>
+<td>影像设备/工作站推送</td>
+<td>设备 DICOM Store SCU 指向 <code>&lt;服务器IP&gt;:4242</code>，AET 任意（StrictAet=false）；推送数据在「远程节点 → 本地未入库检查」中一键导入（自动脱敏）</td>
+</tr>
+<tr>
+<td>已有 Orthanc 迁移</td>
+<td>将旧 Orthanc 的 storage 目录合并后，同样走「本地未入库检查」导入</td>
+</tr>
+<tr>
+<td><strong>远程 PACS 拉取（新）</strong></td>
+<td>在「远程节点」页登记远程 DICOM 节点 → C-FIND 查询 → 一键拉取并导入为教学病例（自动脱敏）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>说明：设备直推/迁移/远程拉取的数据都会在<strong>导入时自动脱敏重建</strong>，Orthanc 内不留原始 PHI；网页上传则在入库前即脱敏。</p>
+<p>Orthanc 的 8042 HTTP 界面（Orthanc Explorer 2）已启用认证，管理时输入 orthanc.json 服务账号；DICOM 4242 通道不受影响。</p>
+</blockquote>
+<h2>6. 字典管理（系统 / 模态 / 难度 / 疾病名称）</h2>
+<p>教师/管理员菜单「字典管理」维护四个类别的选项字典，供上传、编辑、筛选与统计使用：</p>
+<ul>
+<li>四个页签独立维护，每项支持<strong>新增 / 编辑 / 排序 / 停用 / 删除</strong></li>
+<li><strong>停用</strong>：不再出现在下拉中，但历史病例不受影响；<strong>删除</strong>：仅允许未被病例引用的项</li>
+<li>字典存在 <code>app\data\app.db</code>（dict_items 表），随每日备份自动覆盖</li>
+</ul>
+<h3>6.1 xlsx 模板样式与导入</h3>
+<p>点「下载 xlsx 模板」得到模板（含示例行与“填写说明”页），结构如下：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>代码</th>
+<th>名称</th>
+<th>排序</th>
+<th>是否启用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>系统</td>
+<td></td>
+<td>呼吸系统</td>
+<td>1</td>
+<td>是</td>
+</tr>
+<tr>
+<td>模态</td>
+<td>CT</td>
+<td>CT</td>
+<td>1</td>
+<td>是</td>
+</tr>
+<tr>
+<td>难度</td>
+<td>1</td>
+<td>基础</td>
+<td>1</td>
+<td>是</td>
+</tr>
+<tr>
+<td>疾病名称</td>
+<td></td>
+<td>肺结节</td>
+<td>1</td>
+<td>是</td>
+</tr>
+</tbody>
+</table>
+<p>规则：
+- 类别只能填：系统 / 模态 / 难度 / 疾病名称（也接受英文 system/modality/difficulty/disease）
+- 名称必填，同类别不能重复；<strong>同名同类别自动跳过（不覆盖）</strong>
+- 代码：模态填标准缩写（CT/MR/DR/US/OT）；<strong>难度必须填 1/2/3</strong>，否则该行报错不入库
+- 排序：数字越小越靠前；启用：填“是/停用”，留空默认启用
+- 「导出当前字典」可随时备份全部字典为 xlsx</p>
+<blockquote>
+<p><strong>在受限浏览器（嵌入式 webview / 部分客户端内置浏览器）中</strong>：
+- 若点「下载 xlsx 模板 / 导出当前字典」没有文件落地、点「导入 xlsx」不弹文件选择框，说明该环境屏蔽了浏览器的下载与文件选择能力
+- 请改用<strong>「粘贴导入」</strong>按钮：弹窗中每行粘贴一条 <code>类别,代码,名称,排序,是否启用</code>（逗号分隔，后两列可省略），例如 <code>系统,,骨关节系统,16</code>、<code>疾病名称,,骨软骨瘤</code>，无需任何文件操作即可导入
+- 下载也可直接在地址栏打开（用登录后页面的 token）：<code>http://服务器:8000/api/dicts/template?token=&lt;token&gt;</code></p>
+</blockquote>
+<h2>7. 远程 PACS / 设备节点管理</h2>
+<p>教师/管理员菜单「远程节点」：</p>
+<ul>
+<li><strong>本机接收端</strong>：AET <code>EDUPACS</code>、DICOM 端口 <code>4242</code> —— 影像设备直推的目标</li>
+<li><strong>DICOM 节点（Modalities）</strong>：登记院内 PACS / 影像设备；新增保存后<strong>即时生效（无需重启 Orthanc）</strong>，并同步写入 <code>orthanc\orthanc.json</code>，重启后仍然有效；每行可 C-ECHO 测试连通</li>
+<li><strong>Orthanc 节点（Peers）</strong>：HTTP 对接方式（院内平台互联），支持测试连通</li>
+<li><strong>远程查询（C-FIND）</strong>：选节点 + 按患者ID/姓名/日期过滤 → 展示远程 studies → 点「拉取并导入」后自动 C-MOVE 拉回、<strong>走统一脱敏管线</strong>、入库为教学病例</li>
+<li><strong>本地未入库检查</strong>：设备直推 4242 / 迁移合并的未登记数据出现在此，点「导入为病例」自动脱敏重建入库</li>
+</ul>
+<p>安全要点：拉取与导入都会脱敏重建（原始 PHI 仅进教师可见的溯源表）；已入库检查会被拦截防止重复导入；远程 C-MOVE 需对方 PACS 允许本机 AET（EDUPACS）作为 MoveDestination。</p>
+<h2>8. 病例脱敏与检索设计（重要）</h2>
+<h3>8.1 上传即脱敏（自动）</h3>
+<p>教师通过「上传病例」页上传 DICOM 时，系统在入库 Orthanc 之前自动完成脱敏：</p>
+<table>
+<thead>
+<tr>
+<th>处理项</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>患者姓名 / 患者编号 / 检查号 / StudyID</td>
+<td>统一替换为教学编号（如 <code>EDU26-0007</code>）</td>
+</tr>
+<tr>
+<td>出生日期、住址、电话、民族、过敏史、其他患者ID/姓名</td>
+<td>删除</td>
+</tr>
+<tr>
+<td>医疗机构名称/地址、申请/执行/阅片医师、技师、设备序列号</td>
+<td>删除或替换</td>
+</tr>
+<tr>
+<td>私有标签（院内系统藏 PHI 的常见位置）</td>
+<td>全部删除（含序列内嵌套）</td>
+</tr>
+<tr>
+<td>StudyInstanceUID / SeriesInstanceUID / SOPInstanceUID</td>
+<td>统一重写（防止与院内 PACS 交叉比对，同批文件映射一致）</td>
+</tr>
+<tr>
+<td>模态、部位、层厚、序列描述等诊断学字段</td>
+<td>原样保留（教学需要）</td>
+</tr>
+</tbody>
+</table>
+<p>脱敏后 OHIF 阅片器显示的患者信息即为教学编号，学生端全链路看不到任何真实患者信息。</p>
+<h3>8.2 脱敏后如何检索？</h3>
+<p>检索体系从「患者身份」切换为「教学元数据」，病例库首页即支持：</p>
+<ul>
+<li><strong>教学编号 / 标题 / 病名 / 标签</strong> 关键词搜索</li>
+<li>科室、解剖系统、模态、难度多条件筛选</li>
+<li>教师额外可用<strong>原始住院号/原检查号反查</strong>（溯源检索，学生无效）</li>
+</ul>
+<h3>8.3 溯源（受控）</h3>
+<p>原始患者编号/姓名/出生日期/原检查号/原 Study UID/原医疗机构存入独立溯源表：
+- 仅 <strong>教师/管理员</strong> 可在病例详情页点「溯源信息」查看；学生访问接口直接 403
+- 用途：教学更新、回院核对原始检查；溯源表与病例同备份（<code>app\data\app.db</code>）</p>
+<h3>8.4 盲读模式（防锚定依赖）</h3>
+<p>为避免学生先看老师结论再「对答案」，病例默认开启<strong>盲读模式</strong>：
+- 学生进入病例时，<strong>教学要点、参考诊断、各题参考答案均隐藏</strong>，显示 🔒 提示
+- 完成<strong>全部题目作答</strong>后自动解锁（无题目的病例则以打开阅片器为准）
+- 提交后不要求等教师批阅即可见参考内容（及时反馈），得分/评语仍待批阅后显示
+- 教师可在「编辑信息」中按病例关闭盲读（如正常对照病例）</p>
+<h2>9. 教学流程</h2>
+<ol>
+<li><strong>教师</strong>：登录 → 上传病例（自动脱敏；填科室/系统/病名/难度/教学要点/参考诊断，默认盲读模式）→ 发布</li>
+<li><strong>教师</strong>：病例详情页 → 添加问答题目（含参考答案与分值）</li>
+<li><strong>学生</strong>：登录 → 病例库 → 进入病例（盲读模式：教学要点/参考诊断暂不可见）→ 打开 OHIF 阅片器阅片（自动打卡）→ 书写笔记 → 作答全部题目</li>
+<li><strong>作答完成</strong>：学生端自动解锁教学要点、参考诊断与各题参考答案（及时自查）；得分/评语待教师批阅后显示</li>
+<li><strong>教师</strong>：病例详情页批阅答卷（打分+评语）；点「溯源信息」可查原始患者信息（学生不可见）</li>
+<li><strong>教师/管理员</strong>：看板与学情统计 → 掌握全员进度与成绩</li>
+</ol>
+<h2>10. 安全与运维建议</h2>
+<ul>
+<li><strong>改默认密码</strong>：新部署首次登录 admin 强制改密（弹窗不可跳过；部署包内 admin/teacher 等特权账号同样标记首登强制改密，学生演示账号不强制）；批量导入学生时密码列留空则<strong>自动生成随机密码</strong>（导入结果中一次性展示，请导出发放）；自助改密入口：登录后右上角头像 → 修改密码（POST /api/auth/change-password）</li>
+<li><strong>账号批量管理（管理员）</strong>：用户管理页支持三种批量导入：<strong>CSV 粘贴文本</strong>、<strong>xlsx 文件</strong>（点「下载 xlsx 模板」按模板填写；受限浏览器用原生导航下载）、「填入 100 人示例」；用户名重复自动跳过。用户列表支持<strong>勾选批量删除</strong>（可全选；学习记录与答卷一并清理且不可恢复；不能删除自己，且系统始终保留至少一名管理员）。接口：POST <code>/api/users/import</code>、<code>/api/users/import-xlsx</code>、<code>/api/users/batch-delete</code>、GET <code>/api/users/template</code></li>
+<li><strong>token 撤销</strong>：token 内嵌密码哈希指纹，<strong>改密后全员旧 token 立即失效</strong>；停用账号即时生效（每次请求查库）</li>
+<li><strong>内网隔离</strong>：8000/8042 仅对校园/院内网段开放；如需公网访问，务必加反向代理 + HTTPS + 额外认证</li>
+<li><strong>Orthanc HTTP 认证（已默认启用）</strong>：orthanc.json 中 <code>AuthenticationEnabled=true</code>、<code>RemoteAccessAllowed=false</code>（8042 仅本机可达），仅保留一个服务账号（<code>RegisteredUsers</code>，默认 edupacs_service，密码见该文件）；师生与 OHIF 的所有请求由教学系统 8000 端口反向代理并自动附带认证，浏览器无需感知；DICOM 4242 走 DICOM 协议，设备直推/C-MOVE 不受影响。启动脚本（start_all.ps1 / launcher.ps1）与冒烟测试均可自动/参数化读取该账号；<strong>修改服务账号后需重启 Orthanc</strong>。运维上建议 8042 不在防火墙对内网开放（仅 127.0.0.1），外人无法直连阅片或浏览影像</li>
+<li><strong>阅片代理只读（反代写保护）</strong>：8000 上的 <code>/ohif/*</code>、<code>/dicom-web/*</code> 仅放行 <strong>GET/HEAD 只读请求</strong>（QIDO/WADO 阅片所需），dicom-web 仅允许 studies/series/instances 子路径；POST/PUT/DELETE 一律 405 —— 防止未登录客户端借服务账号凭据向 Orthanc 写入/删除（STOW-RS 等）；影像写入只由教学系统上传通道在服务端执行</li>
+<li><strong>脱敏通道</strong>：网页上传入库即脱敏；设备直推/远程拉取/本地导入均在导入时自动脱敏重建，详见第 8 节</li>
+<li><strong>脱敏范围</strong>：除身份字段替换与 PHI 标签删除外，<strong>描述类自由文本（StudyDescription/SeriesDescription/ProtocolName 等）中的已知患者姓名/住院号/生日字符串也会被替换为教学编号</strong>；患者年龄默认清除；性别与检查日期默认保留（教学需要，可在 <code>app\backend\main.py</code> 顶部 <code>DEID_CLEAR_AGE / DEID_KEEP_SEX / DEID_KEEP_STUDY_DATE</code> 开关调整）</li>
+<li><strong>burned-in 文字（像素内烧录的 PHI）</strong>：自动脱敏无法触及像素内文字。图片病例（论文/网络截图）上传时<strong>必须勾选“确认图像内无患者可识别信息”</strong>，请在收集素材时先行遮蔽；DICOM 设备图（DR/超声常见角标烧录）同理，教学库录入前请人工审查</li>
+<li><strong>备份（内置加密备份系统）</strong>：管理员登录后「备份恢复」页面或命令行 <code>tools\backup.py</code> 一键创建 <strong>AES-256-GCM 加密归档</strong>（.edubak）——内容含 app.db、secret.key、orthanc.json（远程节点/服务账号）、Orthanc 索引与全部影像；备份期间自动优雅停止并重启本项目 Orthanc（数秒~数十秒一致性窗口，官方推荐做法；无法编排进程的部署自动降级热备份+WAL 重放）。支持<strong>同机/异机目的地</strong>（异机填 UNC/NFS 挂载路径；每次备份只写入一个目的地，同机+异机两份需分别执行）、按目的地保留策略自动清理、归档校验（GCM+分区哈希）、恢复向导（干跑分析→沙箱→正式，覆盖前自动把现有数据移入回滚保障目录）。详见 10.1 节</li>
+<li><strong>磁盘</strong>：Orthanc 默认不限制存储，建议在 orthanc.json 中按需设置 <code>MaximumStorageSize</code> 或定期归档</li>
+<li><strong>日志</strong>：Orthanc 控制台窗口即日志；应用层可用 <code>--log-config</code> 或重定向输出到文件</li>
+</ul>
+<h3>10.1 备份与恢复（管理员操作手册）</h3>
+<p><strong>概念</strong>：备份归档 <code>.edubak</code> = 明文头（时间/主机/备注/计数，纳入 GCM 认证域）+ AES-256-GCM 流式加密的 tar.gz（manifest + app.db + secret.key + orthanc.json + Orthanc 索引 + 全部影像文件）。密码经 PBKDF2-SHA256 600,000 轮派生 256 位密钥；GCM 自带防篡改。<strong>密码丢失 = 数据不可恢复</strong>（无后门），请按科室密钥管理制度单独保管。</p>
+<p><strong>入口一：网页（管理员 → 备份恢复）</strong></p>
+<ol>
+<li>「立即备份」选目的地、输入备份密码（≥8 位）、备注 → 点开始 → 进度条实时显示（快照/一致性窗口/拷贝/打包/加密/写后校验）</li>
+<li>「归档列表」：列出各目的地归档（大小/时间/内容计数/备注）；行内「校验」输入密码做全量校验（GCM tag + 分区哈希）、「恢复…」打开恢复向导</li>
+<li>恢复向导：① 干跑分析（展示将恢复哪些分区、实例数、备份模式，不写入）→ ② 提示停服 → ③ 正式恢复需在服务器命令行执行（防网页误触）</li>
+<li>「备份目的地配置」：编辑/新增目的地（id/名称/路径/保留份数/启用），异机备份把路径改成 UNC（<code>\\FILESERVER\EduPACS备份</code>）或 NFS 挂载点</li>
+</ol>
+<p><strong>入口二：命令行（计划任务/脚本用）</strong></p>
+<pre><code class="language-powershell"># 交互输密码
+.venv\Scripts\python tools\backup.py backup --dest local
+# 密码走受保护文件（避免命令行泄漏）
+.venv\Scripts\python tools\backup.py backup --dest local --password-file D:\edu-pacs\.secure\bkpass.txt
+.venv\Scripts\python tools\backup.py list --dest local          # 列归档
+.venv\Scripts\python tools\backup.py verify backups\&lt;归档&gt; --password &lt;密码&gt;
+.venv\Scripts\python tools\backup.py restore backups\&lt;归档&gt; --password &lt;密码&gt;          # 干跑分析
+.venv\Scripts\python tools\backup.py restore backups\&lt;归档&gt; --password &lt;密码&gt; --apply   # 正式恢复（须先停服务）
+.venv\Scripts\python tools\backup.py prune --dest local --keep 7
+</code></pre>
+<p>每日定时（Windows 计划任务，SYSTEM 权限跑、密码落受保护文件）：</p>
+<pre><code>schtasks /Create /TN EduPACS-Backup /SC DAILY /ST 02:30 /RU SYSTEM /RL HIGHEST ^
+  /TR &quot;D:\edu-pacs\.venv\Scripts\python.exe D:\edu-pacs\tools\backup.py backup --dest local --password-file D:\edu-pacs\.secure\bkpass.txt&quot;
+</code></pre>
+<p>Ubuntu（cron）：<code>30 2 * * * cd /opt/edu-pacs &amp;&amp; EDUPACS_BACKUP_PASS='...' .venv/bin/python tools/backup.py backup --dest local</code></p>
+<p><strong>恢复流程（灾难恢复演练步骤）</strong></p>
+<ol>
+<li>停服务：<code>EduPACS启动器.exe --stop</code> 或 <code>scripts\stop_all.ps1</code>（Ubuntu/Docker：<code>systemctl stop edu-pacs</code> / <code>docker compose down</code>）</li>
+<li>干跑确认：<code>restore &lt;归档&gt; --password ...</code>（输出将恢复的分区与实例数）</li>
+<li>正式恢复：加 <code>--apply</code>（会自动把现有 app/data、orthanc/storage、orthanc.json 移入 <code>.temp\pre-restore-&lt;时间&gt;\</code> 作为回滚保障）</li>
+<li>起服务 → 跑 <code>tools\smoke_test.py</code>（32 项全过再交付）→ 浏览器抽查一个病例的 OHIF 阅片</li>
+<li>异机恢复：在新服务器装好部署包（含 Python 依赖）后，把 <code>.edubak</code> 拷过去执行同样的 restore --apply</li>
+</ol>
+<p><strong>安全要点</strong></p>
+<ul>
+<li>备份密码与登录密码体系<strong>相互独立</strong>；归档内含 secret.key，拿到归档+密码即等于拿到全部教学数据，归档保管与传输必须按敏感数据管理</li>
+<li>网页/API 的备份管理仅 <strong>admin</strong> 角色可用（教师/学生 403）；密码经 POST body 传输，务必在 HTTPS 或内网可信环境下使用</li>
+<li>写后自动校验：备份完成即解密回读验证（GCM tag+分区哈希），失败归档自动丢弃，不会留下“假成功”备份</li>
+</ul>
+<h2>11. 常见问题</h2>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>阅片器白屏</td>
+<td>确认 Orthanc 已启动（服务器本机可用服务账号访问 http://127.0.0.1:8042/system 自检）；再确认教学系统 8000 可访问；浏览器需现代版本（Chrome/Edge）</td>
+</tr>
+<tr>
+<td>学生看不到病例</td>
+<td>病例仍为草稿，教师详情页点「发布病例」</td>
+</tr>
+<tr>
+<td>学生看不到教学要点/参考诊断</td>
+<td>盲读模式：完成本病例全部题目作答后自动解锁；教师可在编辑信息里关闭盲读</td>
+</tr>
+<tr>
+<td>按真实患者姓名/住院号找不到病例</td>
+<td>上传已自动脱敏，请用教学编号/标题/病名/标签/科室等检索；教师可用原始住院号反查（溯源检索）</td>
+</tr>
+<tr>
+<td>上传报 Orthanc 未接收</td>
+<td>先确认 Orthanc 已启动；检查文件确为 DICOM（.dcm）；若报"无法解析"则文件非标准 DICOM</td>
+</tr>
+<tr>
+<td>其他电脑打不开 127.0.0.1</td>
+<td>用服务器实际 IP 访问，如 http://192.168.x.x:8000</td>
+</tr>
+<tr>
+<td>端口被占用</td>
+<td>修改 orthanc.json 的 HttpPort/DicomPort，以及 uvicorn --port，同步改 start_all.ps1；stop_all.ps1 遇到他人进程占用 8000/8042 时只报告不会误杀，改端口后请同步修改 stop_all.ps1 中的端口列表</td>
+</tr>
+<tr>
+<td>想通过 8000 的 /dicom-web 上传/删除影像</td>
+<td>设计上禁止：阅片代理仅 GET/HEAD（写操作 405），写入请走教学系统「上传病例」/「远程节点」通道（服务端自动附带认证与脱敏）</td>
+</tr>
+<tr>
+<td>双击 bat 没反应 / 窗口一闪就没</td>
+<td>用命令行执行 <code>powershell -NoProfile -ExecutionPolicy Bypass -File scripts\launcher.ps1 -TestAction Status</code> 看输出，并查看 <code>.temp\launcher_error.log</code></td>
+</tr>
+<tr>
+<td>启动器按钮无反应或报错</td>
+<td>v2 已修复根因（浏览器查找改用硬编码路径 + 环境变量双保险，兼容缺失 <code>ProgramFiles(x86)</code> 的精简系统）；每次点击都会记录到 <code>.temp\launcher_click.log</code>，报错记录到 <code>.temp\launcher_error.log</code>，据此可精确定位</td>
+</tr>
+<tr>
+<td>提示「你要如何打开此文件」选择框</td>
+<td>系统未设默认浏览器。启动器优先调用 Edge，其次 Chrome；两者都未安装时请手动打开 http://127.0.0.1:8000</td>
+</tr>
+<tr>
+<td>PowerShell 脚本里中文乱码</td>
+<td>脚本必须存为 <strong>UTF-8 带 BOM</strong>；用记事本「另存为」选 UTF-8（带 BOM），或改用 <code>EduPACS启动器.bat</code></td>
+</tr>
+<tr>
+<td>执行 ps1 提示「禁止运行脚本」</td>
+<td>用 bat 启动器（已带 <code>-ExecutionPolicy Bypass</code>），或执行 <code>Set-ExecutionPolicy -Scope Process Bypass</code></td>
+</tr>
+<tr>
+<td>忘记 admin 密码</td>
+<td>停止服务后删除 <code>app\data\app.db</code> 中 admin 行会重建默认密码（或用另一管理员重置）</td>
+</tr>
+<tr>
+<td>看不到「字典管理」「远程节点」等新菜单</td>
+<td>浏览器缓存了旧版前端：按 <strong>Ctrl+F5</strong>（Mac：⌘⇧R）强制刷新即可；系统已对前端文件启用 no-cache 缓存策略，升级后不会再出现此问题</td>
+</tr>
+<tr>
+<td>在 Orthanc Explorer 2（http://服务器:8042）里找不到远程节点维护入口</td>
+<td>Orthanc Explorer 2 的「设置」里只有系统信息与指标，<strong>官方 UI 本身不提供节点维护界面</strong>（传统 UI 也只有对已配置节点的查询/发送下拉）。请使用教学系统（8000）顶栏「<strong>远程节点</strong>」页维护：保存后即时生效并同步写入 orthanc.json</td>
+</tr>
+<tr>
+<td>打开 Orthanc 后台（8042）弹出浏览器认证框</td>
+<td><strong>正常现象</strong>：8042 已启用 HTTP 认证。输入 orthanc.json <code>RegisteredUsers</code> 中的服务账号（默认 edupacs_service，密码见该文件）；教学系统（8000）本身不受影响，师生无需输入</td>
+</tr>
+<tr>
+<td>改了 orthanc.json 服务账号/密码后启动器或冒烟测试失败</td>
+<td>启动脚本与冒烟测试会自动/参数化读取 orthanc.json；确认 JSON 格式正确后<strong>重启 Orthanc</strong> 生效，再重试</td>
+</tr>
+</tbody>
+</table>
+<p>| 备份提示“密码错误”但确认没输错 | 备份密码区分大小写；<code>verify</code> 用错误密码快速失败（头部 kc 指纹）；确系遗忘密码则该归档无法恢复（AES-256-GCM 无后门） |
+| 网页点「开始备份」无反应 | 先看「立即备份」卡片下方进度框是否出现；F12 控制台排错；确认 admin 角色；服务器上 <code>tools\backup.py backup --dest local</code> 可离线复现 |
+| 备份期间 Orthanc 状态灯变红 | 正常：备份的一致性窗口内 Orthanc 被短暂优雅停止（数秒~数十秒）后自动拉回，无需人工干预 |
+| 异机目的地（UNC/NFS）写入失败 | 确认路径可写（服务账号权限）；<code>tools\backup.py list --dest offsite</code> 排错；目的地未启用时网页会提示先启用 |
+| 恢复后 OHIF 阅片空白 | 检查恢复日志中 index 快照模式；跑冒烟测试；确认恢复时两个服务均已停止（否则索引与存储可能撕裂） |</p>
+<h2>12. 组件版本清单</h2>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>版本</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Orthanc</td>
+<td>1.13.0（官方安装包 OrthancInstaller-Win64-26.9.1 内含）</td>
+<td>orthanc.uclouvain.be 官方</td>
+</tr>
+<tr>
+<td>OrthancDicomWeb 插件</td>
+<td>1.24</td>
+<td>安装包内置</td>
+</tr>
+<tr>
+<td>OrthancOHIF 插件</td>
+<td>1.8（内嵌 OHIF 3.13.x）</td>
+<td>安装包内置</td>
+</tr>
+<tr>
+<td>OHIF Viewer</td>
+<td>3.13.x（插件内嵌构建）</td>
+<td>随 OrthancOHIF 插件分发</td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.12</td>
+<td>本机</td>
+</tr>
+<tr>
+<td>FastAPI / uvicorn</td>
+<td>0.163.2 / latest</td>
+<td>PyPI</td>
+</tr>
+<tr>
+<td>pydicom</td>
+<td>3.0.2（上传脱敏必需，另用于样例数据生成）</td>
+<td>PyPI</td>
+</tr>
+<tr>
+<td>openpyxl</td>
+<td>3.1.5（字典 xlsx 模板/导入/导出）</td>
+<td>PyPI</td>
+</tr>
+<tr>
+<td>Pillow</td>
+<td>13.0.0（图片病例导入，jpg/png 转 DICOM）</td>
+<td>PyPI</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>版本锁定：<code>requirements.lock.txt</code>（pip freeze 全量锁定）用于完全复现环境；<code>requirements.txt</code> 为宽松约束。</p>
+<p>AI生成</p>
+</blockquote>
+</body>
+</html>

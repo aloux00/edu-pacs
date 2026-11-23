@@ -1,0 +1,11 @@
+# 跨平台行尾纪律
+# Linux 侧执行的脚本与 Docker 相关文件必须保持 LF（Windows 检出时禁止转 CRLF）
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+docker/**       text eol=lf
+
+# PowerShell 脚本（仓库内为 BOM+LF/CRLF 均可运行，统一由文件自身保证）
+*.ps1           text
+
+# 其余文本按平台默认策略

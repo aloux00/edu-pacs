@@ -1,0 +1,34 @@
+{
+  "Name": "EduPACS",
+  "DicomAet": "EDUPACS",
+  "DicomPort": 4242,
+  "HttpPort": 8042,
+  "RemoteAccessAllowed": false,
+  "AuthenticationEnabled": true,
+  "StrictAet": false,
+  "StorageDirectory": "storage",
+  "Plugins": [
+    "plugins/OrthancDicomWeb.dll",
+    "plugins/OrthancOHIF.dll",
+    "plugins/OrthancExplorer2.dll",
+    "plugins/ServeFolders.dll"
+  ],
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "Ssl": false
+  },
+  "OHIF": {
+    "DataSource": "dicom-web"
+  },
+  "OrthancExplorer2": {
+    "Enable": true,
+    "IsDefaultOrthancUI": true
+  },
+  "DicomModalities": {},
+  "RegisteredUsers": {
+    "edupacs_service": "<请修改为强密码>"
+  }
+}

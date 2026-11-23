@@ -1,0 +1,25 @@
+# 依赖与运行时
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.temp/
+
+# 应用数据（含账号库/密钥/溯源表——首次运行自动重建，请勿提交）
+app/data/
+
+# Orthanc 运行时二进制与影像存储（获取方式见 README）
+orthanc/*.exe
+orthanc/plugins/*.dll
+orthanc/storage/
+
+# 资源编译中间产物（由 scripts/launcher.rc + app/static/favicon.ico 生成）
+scripts/launcher.res
+
+# 分发构建产物（安装包约 193MB 超出 GitHub 单文件 100MB 限制）
+deploy/
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+desktop.ini

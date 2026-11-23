@@ -1,0 +1,80 @@
+[
+  {
+    "title": "胸部CT平扫（正常对照）",
+    "department": "放射科",
+    "system": "呼吸系统",
+    "disease": "正常胸部解剖",
+    "difficulty": 1,
+    "tags": "CT,正常解剖,肺窗",
+    "teaching_points": "辨认双肺野、肺纹理、纵隔大血管、心脏、脊柱与肋骨的正常CT解剖；练习肺窗与纵隔窗切换。",
+    "diagnosis": "胸部CT平扫未见明确异常。",
+    "modality": "CT",
+    "sample_dir": "CT_CHEST_NORMAL",
+    "study_uid": "1.2.826.0.1.3680043.10.9997.2026.2.82895412722311371306352328037"
+  },
+  {
+    "title": "胸部CT平扫（肺内结节）",
+    "department": "放射科",
+    "system": "呼吸系统",
+    "disease": "肺结节（模拟）",
+    "difficulty": 2,
+    "tags": "CT,肺结节,阅片训练",
+    "teaching_points": "在肺窗中寻找右肺高密度结节灶，描述其位置、大小、边缘特征；对比正常对照病例。",
+    "diagnosis": "右肺上叶可见类圆形高密度结节灶（模拟病灶），建议随访复查。",
+    "modality": "CT",
+    "sample_dir": "CT_CHEST_NODULE",
+    "study_uid": "1.2.826.0.1.3680043.10.9997.2026.2.21654838316044717041055104726"
+  },
+  {
+    "title": "颅脑MR平扫（正常对照）",
+    "department": "放射科",
+    "system": "神经系统",
+    "disease": "正常颅脑解剖",
+    "difficulty": 1,
+    "tags": "MR,正常解剖,T1WI",
+    "teaching_points": "辨认脑实质灰白质分界、脑室系统、中线结构；理解MR多序列成像特点。",
+    "diagnosis": "颅脑MRI平扫未见明确异常。",
+    "modality": "MR",
+    "sample_dir": "MR_BRAIN_NORMAL",
+    "study_uid": "1.2.826.0.1.3680043.10.9997.2026.2.36500800862624075314508990900"
+  },
+  {
+    "title": "颅脑MR平扫（占位病变）",
+    "department": "放射科",
+    "system": "神经系统",
+    "disease": "颅内占位（模拟）",
+    "difficulty": 3,
+    "tags": "MR,占位,阅片训练",
+    "teaching_points": "寻找左侧额顶叶异常信号灶，描述其位置、大小、周围水肿带与中线移位情况。",
+    "diagnosis": "左侧额顶叶可见类圆形异常信号灶伴周围水肿（模拟病灶）。",
+    "modality": "MR",
+    "sample_dir": "MR_BRAIN_LESION",
+    "study_uid": "1.2.826.0.1.3680043.10.9997.2026.2.1859992483426953669118606144"
+  },
+  {
+    "title": "腹部CT平扫（肝内低密度灶）",
+    "department": "放射科",
+    "system": "消化系统",
+    "disease": "肝占位（模拟）",
+    "difficulty": 2,
+    "tags": "CT,腹部,肝占位",
+    "teaching_points": "辨认肝、脾、双肾、胰腺层面结构；寻找肝右叶低密度灶并测量CT值。",
+    "diagnosis": "肝右叶可见类圆形低密度灶（模拟病灶）。",
+    "modality": "CT",
+    "sample_dir": "CT_ABDOMEN_LIVER",
+    "study_uid": "1.2.826.0.1.3680043.10.9997.2026.2.26860547029204121681927535585"
+  },
+  {
+    "title": "膝关节DR正侧位（正常对照）",
+    "department": "放射科",
+    "system": "运动系统",
+    "disease": "正常膝关节X线解剖",
+    "difficulty": 1,
+    "tags": "CR,X线,骨关节",
+    "teaching_points": "辨认股骨远端、胫骨平台、髌骨、腓骨头与关节间隙；理解X线正侧位对应关系。",
+    "diagnosis": "膝关节正侧位未见明确骨折及脱位征象。",
+    "modality": "CR",
+    "sample_dir": "CR_KNEE",
+    "study_uid": "1.2.826.0.1.3680043.10.9997.2026.2.29270328704318246043554097707"
+  }
+]
