@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import string
 import time
+import traceback
 import uuid
 import zipfile
 from pathlib import Path
@@ -25,7 +26,7 @@ import numpy as np
 import pydicom
 import requests as http_client
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -82,6 +83,24 @@ async def _no_cache_frontend(request: Request, call_next):
     if p == "/" or p.endswith(".html") or p.endswith(".js") or p.endswith(".css") or p.endswith(".ico"):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+# 未捕获异常：记录完整 traceback 到日志并把错误原因返回前端，避免裸 500 无法排查
+@app.exception_handler(Exception)
+async def _unhandled_exception(request: Request, exc: Exception):
+    detail = f"{type(exc).__name__}: {exc}"
+    log_path = DATA / "error.log"
+    try:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {request.method} {request.url.path} =====\n")
+            f.write(f"{detail}\n")
+            f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:
+        pass
+    # 上传类接口把细节回传，便于前端 toast 显示具体失败原因；其它接口仅回通用提示
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=500, content={"detail": detail})
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 
 # ---------------------------------------------------------------- 基础设施
@@ -1792,8 +1811,22 @@ async def upload_case(
                                      timeout=ORTHANC_TIMEOUT, auth=ORTHANC_AUTH)
                 if r.status_code == 200:
                     resp = r.json()
-                    study_ids[resp["ParentStudy"]] = True
-                    uploaded += 1
+                    # 部分 Orthanc 版本/重复实例响应的 JSON 里没有 ParentStudy，
+                    # 直接下标访问会抛 KeyError → 裸 500。改为健壮解析。
+                    parent = resp.get("ParentStudy") if isinstance(resp, dict) else None
+                    if parent:
+                        study_ids[parent] = True
+                        uploaded += 1
+                    elif resp.get("AlreadyExists") and isinstance(resp["AlreadyExists"], dict):
+                        # 重复上传已存在实例：Orthanc 返回 {"AlreadyExists": {"ID": ..., "ParentStudy": ...}}
+                        parent2 = resp["AlreadyExists"].get("ParentStudy")
+                        if parent2:
+                            study_ids[parent2] = True
+                            uploaded += 1
+                        else:
+                            failed += 1
+                    else:
+                        failed += 1
                 else:
                     failed += 1
             except Exception:

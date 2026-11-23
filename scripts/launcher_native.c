@@ -19,9 +19,12 @@
  * 编译（zig cc = clang，纯静态链接，无 DLL 依赖；GUI 子系统无控制台窗口）：
  *   zig rc scripts/launcher.rc scripts/launcher.res      # 应用图标资源（引用 app/static/favicon.ico）
  *   zig cc scripts/launcher_native.c scripts/launcher.res -O2 -s -static \
- *        -Wl,--subsystem,windows -o EduPACS启动器.exe \
+ *        -mcpu=baseline -Wl,--subsystem,windows -o EduPACS启动器.exe \
  *        -lwininet -liphlpapi -lshell32 -lgdi32 -luser32
  *   注意：未紧跟参数时 "-Wl,--subsystem,windows" 在 PowerShell 里需整体加引号。
+ *   【重要】必须加 -mcpu=baseline：否则较新 zig 会内联生成 AVX-512 指令，
+ *   在不支持 AVX-512 的老 CPU（如 i5-3340M）上 --stop 路径会抛 0xc000001d 非法指令崩溃。
+ *   baseline = x86-64 基线 SSE2，任何 amd64 机器都能运行。
  */
 
 #define UNICODE
@@ -464,7 +467,8 @@ static int do_stop(char *out, int outlen)
             char one[160];
             snprintf(one, sizeof one, "%s(PID %lu) ", g_match[i].exe,
                      (unsigned long)g_match[i].pid);
-            strncat(list, one, sizeof list - strlen(list) - 1);
+            size_t used = strlen(list), room = sizeof list - used - 1;
+            if (room > 0) strncat(list, one, room);   /* 防止 list 写满时无符号下溢 */
         }
     }
     Sleep(1200);

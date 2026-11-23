@@ -6,6 +6,7 @@ const state = {
   user: JSON.parse(localStorage.getItem("edupacs_user") || "null"),
   config: { orthanc_origin: "http://127.0.0.1:8042" },
 };
+const FORCE_PWD_ID = "forcePwdOverlay"; // 强制改密遮罩的唯一 id，便于幂等清理
 
 /* ---------------- 工具 ---------------- */
 const $app = document.getElementById("app");
@@ -56,6 +57,8 @@ function logout() {
   state.user = null;
   localStorage.removeItem("edupacs_token");
   localStorage.removeItem("edupacs_user");
+  // 兜底：任何登出路径（含 401 自动登出）都要清掉强制改密遮罩
+  document.getElementById(FORCE_PWD_ID)?.remove();
   location.hash = "#/login";
 }
 
@@ -82,7 +85,10 @@ function barChart(rows, unit) {
 
 /* 强制改密：首次登录/重置后 must_change_pwd=1 时拦截使用 */
 function showForceChangePwd() {
+  // 幂等：路由重绘时先清掉旧遮罩，避免多个弹窗叠加；登出/改密成功也靠它清除
+  document.getElementById(FORCE_PWD_ID)?.remove();
   const wrap = document.createElement("div");
+  wrap.id = FORCE_PWD_ID;
   wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px";
   wrap.innerHTML = `
     <div class="card" style="max-width:420px;width:100%;margin:0">
@@ -104,6 +110,11 @@ function showForceChangePwd() {
         method: "POST",
         json: { old_password: document.getElementById("fcOld").value, new_password: n1 },
       });
+      // 清除本地强制改密标记，避免登出前的重绘又弹出遮罩
+      if (state.user) state.user.must_change_pwd = false;
+      localStorage.setItem("edupacs_user", JSON.stringify(state.user));
+      // 先移除遮罩再登出：否则跳回登录页后弹窗仍盖在最前面
+      document.getElementById(FORCE_PWD_ID)?.remove();
       toast("密码已修改，请用新密码重新登录");
       setTimeout(() => logout(), 800);
     } catch (e) { toast(e.message, true); }
@@ -413,7 +424,7 @@ async function viewCase(id) {
       ${metaHtml}
       <div class="muted" style="margin-top:10px">StudyInstanceUID: ${esc(c.study_uid)}</div>
       <div class="btn-row" style="margin-top:14px">
-        <button class="btn primary" id="viewerBtn">打开阅片器（OHIF）</button>
+        <button class="btn primary" id="viewerBtn">打开阅片器</button>
         ${state.user.role === "student" ? `
           <textarea id="noteInput" placeholder="学习笔记（可选）：写下你的阅片发现..." style="flex:1;min-width:240px;border:1px solid var(--border);border-radius:8px;padding:8px 11px;font-family:inherit;min-height:38px">${esc((c.note || ""))}</textarea>
           <button class="btn" id="noteBtn">保存笔记</button>` : ""}
@@ -432,10 +443,12 @@ async function viewCase(id) {
     <div id="editArea"></div>`, "#/case/" + id);
 
   document.getElementById("viewerBtn").onclick = async () => {
+    const btn = document.getElementById("viewerBtn");
     const box = document.getElementById("viewerBox");
     const frame = document.getElementById("viewerFrame");
     const opening = box.style.display === "none";
     box.style.display = opening ? "block" : "none";
+    btn.textContent = opening ? "关闭阅片器" : "打开阅片器";
     if (opening && !frame.getAttribute("src")) {
       frame.setAttribute("src", frame.getAttribute("data-src"));
     }
