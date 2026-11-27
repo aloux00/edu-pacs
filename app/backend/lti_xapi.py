@@ -63,7 +63,7 @@ _worker_started = False
 # ---------------------------------------------------------------- 基础工具
 def _log(msg: str) -> None:
     try:
-        p = ROOT / "app" / "data" / "integrations.log"
+        p = Path(os.environ.get("EDUPACS_INTEGRATIONS_LOG", ROOT / "app" / "data" / "integrations.log"))
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")

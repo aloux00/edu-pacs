@@ -43,9 +43,12 @@ os.environ["EDUPACS_SECRET_FILE"] = str(SECRET_PATH)
 os.environ["EDUPACS_LTI_PUBLIC_URL"] = BASE
 os.environ["EDUPACS_LTI_CONFIG"] = str(TMP / "lti.json")
 os.environ["EDUPACS_XAPI_CONFIG"] = str(TMP / "xapi.json")
+os.environ["EDUPACS_LTI_KEY"] = str(TMP / "lti_private.pem")
+os.environ["EDUPACS_INTEGRATIONS_LOG"] = str(TMP / "integrations.log")
 
 # 每次自测从干净数据库开始（仅清理 .temp/lti_selftest 内的测试库）
-for _p in (DB_PATH, SECRET_PATH, Path(str(DB_PATH) + "-wal"), Path(str(DB_PATH) + "-shm")):
+for _p in (DB_PATH, SECRET_PATH, TMP / "lti_private.pem",
+           Path(str(DB_PATH) + "-wal"), Path(str(DB_PATH) + "-shm")):
     try:
         _p.unlink()
     except FileNotFoundError:
