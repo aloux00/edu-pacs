@@ -143,6 +143,11 @@ CREATE TABLE IF NOT EXISTS cases (
     orthanc_study_id TEXT DEFAULT '',
     patient_id TEXT DEFAULT '',
     patient_name TEXT DEFAULT '',
+    patient_age TEXT DEFAULT '',
+    patient_sex TEXT DEFAULT '',
+    chief_complaint TEXT DEFAULT '',
+    medical_history TEXT DEFAULT '',
+    clinical_info TEXT DEFAULT '',
     modality TEXT DEFAULT '',
     body_part TEXT DEFAULT '',
     department TEXT DEFAULT '放射科',
@@ -232,6 +237,10 @@ def init_db():
         cols = [r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()]
         if "blind_mode" not in cols:
             conn.execute("ALTER TABLE cases ADD COLUMN blind_mode INTEGER DEFAULT 1")
+        # 增量迁移：教学用匿名化临床信息（旧库兼容）
+        for col in ("patient_age", "patient_sex", "chief_complaint", "medical_history", "clinical_info"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE cases ADD COLUMN {col} TEXT DEFAULT ''")
         # 增量迁移：首次登录强制改密标记（旧库兼容）
         ucols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
         if "must_change_pwd" not in ucols:
@@ -338,6 +347,29 @@ def sanitize_filename(name: str) -> str:
     name = os.path.basename(name or "")
     name = re.sub(r'[\\/:*?"<>|]', "_", name)
     return name or "file.dcm"
+
+
+# 教学用匿名化临床信息：仅存 SQLite 病例元数据，绝不写回 DICOM PHI 标签
+ANON_TEXT_LIMITS = {
+    "patient_age": 40,
+    "patient_sex": 20,
+    "chief_complaint": 500,
+    "medical_history": 4000,
+    "clinical_info": 4000,
+}
+
+
+def clean_anon_text(value, key: str) -> str:
+    """清理匿名化字段：去控制字符、去首尾空白、限长。"""
+    s = "" if value is None else str(value)
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", s)
+    return s.strip()[:ANON_TEXT_LIMITS[key]]
+
+
+def anon_fields_from_meta(meta: dict) -> dict:
+    """从上传/导入 meta 中抽取匿名化字段（缺失留空，兼容旧客户端）。"""
+    meta = meta or {}
+    return {k: clean_anon_text(meta.get(k, ""), k) for k in ANON_TEXT_LIMITS}
 
 
 # ---------------------------------------------------------------- 认证接口
@@ -1154,18 +1186,22 @@ def _create_case_record(sid: str, m: dict, user: sqlite3.Row, teaching_code: str
                               (tags.get("StudyInstanceUID", ""),)).fetchone()
         if exists:
             raise HTTPException(400, f"该检查已导入过（病例 #{exists['id']}），请勿重复导入")
+        anon = anon_fields_from_meta(m)
         cur = conn.execute(
             """INSERT INTO cases(title,study_uid,orthanc_study_id,patient_id,patient_name,modality,
                body_part,department,system,disease,difficulty,tags,teaching_points,diagnosis,
-               status,series_count,image_count,created_by,blind_mode)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               status,series_count,image_count,created_by,blind_mode,
+               patient_age,patient_sex,chief_complaint,medical_history,clinical_info)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (title, tags.get("StudyInstanceUID", ""), sid, pat.get("PatientID", ""),
              pat.get("PatientName", ""), modality, m.get("body_part", ""),
              m.get("department", "放射科"), m.get("system", ""), m.get("disease", ""),
              int(m.get("difficulty") or 1), m.get("tags", ""), m.get("teaching_points", ""),
              m.get("diagnosis", ""), m.get("status", "draft"),
              len(series_list), image_count, user["username"],
-             1 if m.get("blind_mode", True) else 0))
+             1 if m.get("blind_mode", True) else 0,
+             anon["patient_age"], anon["patient_sex"], anon["chief_complaint"],
+             anon["medical_history"], anon["clinical_info"]))
         case_id = cur.lastrowid
         conn.execute(
             """INSERT INTO case_origin(case_id,source_patient_id,source_patient_name,
@@ -1376,8 +1412,10 @@ def list_cases(q: str = "", department: str = "", system: str = "", modality: st
         sql += " AND status=?"
         args += [status]
     if q:
-        sql += " AND (title LIKE ? OR disease LIKE ? OR tags LIKE ? OR patient_id LIKE ?"
-        args += [f"%{q}%"] * 4
+        sql += (" AND (title LIKE ? OR disease LIKE ? OR tags LIKE ? OR patient_id LIKE ?"
+                " OR patient_age LIKE ? OR patient_sex LIKE ? OR chief_complaint LIKE ?"
+                " OR medical_history LIKE ? OR clinical_info LIKE ?")
+        args += [f"%{q}%"] * 9
         if user["role"] in ("admin", "teacher"):
             # 教师可用原始住院号/检查号/源UID反查（溯源检索）
             sql += " OR EXISTS(SELECT 1 FROM case_origin o WHERE o.case_id=cases.id " \
@@ -1861,6 +1899,11 @@ class CaseBody(BaseModel):
     diagnosis: Optional[str] = None
     status: Optional[str] = None
     blind_mode: Optional[bool] = None
+    patient_age: Optional[str] = None
+    patient_sex: Optional[str] = None
+    chief_complaint: Optional[str] = None
+    medical_history: Optional[str] = None
+    clinical_info: Optional[str] = None
 
 
 @app.put("/api/cases/{case_id}")
@@ -1874,6 +1917,9 @@ def update_case(case_id: int, body: CaseBody, user=Depends(require_roles("admin"
         fields["difficulty"] = max(1, min(int(fields["difficulty"]), 3))
     if "blind_mode" in fields:
         fields["blind_mode"] = int(bool(fields["blind_mode"]))
+    for k in ANON_TEXT_LIMITS:
+        if k in fields:
+            fields[k] = clean_anon_text(fields[k], k)
     sets = ",".join(f"{k}=?" for k in fields)
     args = list(fields.values()) + [case_id]
     with db() as conn:

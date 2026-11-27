@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  EduPACS 教学系统后端服务（WinSW 2.12 配置）
+  依赖 EduPACS-Orthanc：开机时 Orthanc 先起，本服务后起。
+  路径全部相对 %BASE%（本 XML 所在 services 目录）。
+-->
+<service>
+  <id>EduPACS-App</id>
+  <name>EduPACS 教学系统后端</name>
+  <description>EduPACS 教学病例库 - FastAPI 后端与 OHIF 阅片同源入口（HTTP 8000）</description>
+
+  <!-- 工作目录必须是项目根：main.py 以自身位置推导 ROOT，读取 app/data、orthanc/orthanc.json -->
+  <executable>%BASE%\..\.venv\Scripts\python.exe</executable>
+  <arguments>-m uvicorn app.backend.main:app --host 0.0.0.0 --port 8000</arguments>
+  <workingdirectory>%BASE%\..</workingdirectory>
+
+  <logpath>%BASE%\..\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>6</keepFiles>
+  </log>
+
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec" />
+  <resetfailure>1 hour</resetfailure>
+  <stopwaitsecs>30</stopwaitsecs>
+
+  <!-- 依赖关系：Orthanc 未起来时 SCM 不会启动本服务 -->
+  <depend>EduPACS-Orthanc</depend>
+</service>

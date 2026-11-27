@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  EduPACS Orthanc 影像服务（WinSW 2.12 配置）
+  由 services\install-service.ps1 安装为 Windows 服务。
+  路径全部相对 %BASE%（本 XML 所在 services 目录），整包搬到任意盘符均可。
+-->
+<service>
+  <id>EduPACS-Orthanc</id>
+  <name>EduPACS Orthanc 影像服务</name>
+  <description>EduPACS 教学病例库 - Orthanc DICOM 存储与 DICOMweb/OHIF 阅片（HTTP 8042 / DICOM 4242，仅本机）</description>
+
+  <!-- Orthanc 必须以 orthanc 目录为工作目录：orthanc.json 中 storage、plugins 均为相对路径 -->
+  <executable>%BASE%\..\orthanc\Orthanc.exe</executable>
+  <arguments>"%BASE%\..\orthanc\orthanc.json"</arguments>
+  <workingdirectory>%BASE%\..\orthanc</workingdirectory>
+
+  <logpath>%BASE%\..\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>6</keepFiles>
+  </log>
+
+  <!-- 开机自启；异常退出 10 秒后自动重启（1 小时内累计 3 次以上才重置计数） -->
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec" />
+  <resetfailure>1 hour</resetfailure>
+  <stopwaitsecs>30</stopwaitsecs>
+</service>

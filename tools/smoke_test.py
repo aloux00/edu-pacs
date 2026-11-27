@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """EduPACS 教学病例库系统 · 端到端冒烟测试
 
-覆盖：登录(含 token 撤销) → 上传含 PHI 的 DICOM → 脱敏断言（含自由文本 PHI 清洗）
+覆盖：登录(含 token 撤销) → 上传含 PHI 的 DICOM → 匿名化临床信息入库/编辑 → 脱敏断言（含自由文本 PHI 清洗）
      → 题目创建 → 学生盲读锁定 → 作答解锁 → 教师批阅 → 学情统计 → 清理
 用法：
     .venv\\Scripts\\python tools\\smoke_test.py [--base http://127.0.0.1:8000]
@@ -135,6 +135,8 @@ def main():
                files={"files": ("smoke_phi.dcm", payload, "application/dicom")},
                data={"meta": '{"title":"冒烟脱敏测试病例","department":"放射科","system":"呼吸系统",'
                              '"disease":"肺结节（模拟）","difficulty":1,"status":"published","blind_mode":true,'
+                             '"patient_age":"55岁","patient_sex":"男","chief_complaint":"咳嗽两周（模拟）",'
+                             '"medical_history":"吸烟史 20 年（模拟）","clinical_info":"教学模拟数据，无真实身份信息",'
                              '"teaching_points":"冒烟要点：注意病灶边缘与邻近结构。",'
                              '"diagnosis":"冒烟诊断：肺结节（模拟）"}'},
                headers=t_h)
@@ -143,6 +145,21 @@ def main():
         sys.exit(1)
     case_id = r.json()["id"]
     tc = r.json().get("teaching_code", "")
+
+    # 匿名化临床信息：上传入库 + 编辑
+    anon = s.get(f"{BASE}/api/cases/{case_id}", headers=t_h).json()
+    check("匿名化信息随上传入库",
+          anon.get("patient_age") == "55岁" and anon.get("patient_sex") == "男"
+          and anon.get("medical_history") == "吸烟史 20 年（模拟）",
+          {k: anon.get(k) for k in ("patient_age", "patient_sex", "medical_history")})
+    r = s.put(f"{BASE}/api/cases/{case_id}",
+              json={"patient_age": "56岁", "patient_sex": "女", "medical_history": "无特殊（模拟）"},
+              headers=t_h)
+    anon2 = r.json() if r.status_code == 200 else {}
+    check("匿名化信息可编辑",
+          r.status_code == 200 and anon2.get("patient_age") == "56岁"
+          and anon2.get("patient_sex") == "女"
+          and anon2.get("medical_history") == "无特殊（模拟）", r.text[:200])
 
     # 从 Orthanc 拉回脱敏后的 DICOM 做零泄漏断言
     st_all = requests.get(f"{ORTHANC}/studies?expand", timeout=30, auth=ORTHANC_AUTH).json()

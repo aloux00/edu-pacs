@@ -332,6 +332,7 @@ async function loadCases() {
             <span class="badge">${esc(c.department)}</span>
             ${c.system ? `<span class="badge blue">${esc(c.system)}</span>` : ""}
             ${c.disease ? `<span class="badge gray">${esc(c.disease)}</span>` : ""}
+            ${(c.patient_sex || c.patient_age) ? `<span class="badge blue">${esc([c.patient_sex, c.patient_age].filter(Boolean).join(" · "))}</span>` : ""}
             ${c.status === "draft" ? '<span class="badge amber">草稿</span>' : ""}
             ${c.learned ? '<span class="badge green">已学习</span>' : ""}
           </div>
@@ -378,6 +379,18 @@ async function viewCase(id) {
       <div class="kv"><div class="k">科室</div><div class="v">${esc(c.department)}</div></div>
       <div class="kv"><div class="k">序列 / 图像</div><div class="v">${c.series_count} 序列 / ${c.image_count} 幅</div></div>
       <div class="kv"><div class="k">难度</div><div class="v">${stars(c.difficulty)} ${fmtDiff(c.difficulty)}</div></div>
+    </div>`;
+
+  const anonHtml = `
+    <div class="card"><div class="card-title">患者匿名化信息</div>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">年龄</div><div class="v">${esc(c.patient_age || "-")}</div></div>
+        <div class="kv"><div class="k">性别</div><div class="v">${esc(c.patient_sex || "-")}</div></div>
+        <div class="kv" style="grid-column:1/-1"><div class="k">主诉</div><div class="v" style="white-space:pre-wrap">${esc(c.chief_complaint || "-")}</div></div>
+        <div class="kv" style="grid-column:1/-1"><div class="k">病史</div><div class="v" style="white-space:pre-wrap">${esc(c.medical_history || "-")}</div></div>
+        <div class="kv" style="grid-column:1/-1"><div class="k">其他临床资料</div><div class="v" style="white-space:pre-wrap">${esc(c.clinical_info || "-")}</div></div>
+      </div>
+      <div class="muted" style="margin-top:10px">由教师手工录入的教学信息；严禁包含姓名、住院号、身份证号等可识别信息。此信息不写回 DICOM。</div>
     </div>`;
 
   const headActions = isTeacher ? `
@@ -434,6 +447,7 @@ async function viewCase(id) {
         <iframe class="viewer-frame" id="viewerFrame" data-src="${esc(viewerUrl)}"></iframe>
       </div>
     </div>
+    ${anonHtml}
     ${teachHtml}
     ${diagHtml}
     <div class="card"><div class="card-title">教学问答</div>
@@ -642,6 +656,8 @@ function bindTeacherGrading(caseId) {
 async function renderCaseEdit(c) {
   const meta = await loadMeta();
   const blindOn = c.blind_mode === 1 || c.blind_mode === true;
+  const sexOpts = ["", "男", "女", "其他", "未说明"];
+  if (c.patient_sex && !sexOpts.includes(c.patient_sex)) sexOpts.push(c.patient_sex);
   const area = document.getElementById("editArea");
   area.innerHTML = `
     <div class="card"><div class="card-title">编辑病例信息</div>
@@ -656,6 +672,13 @@ async function renderCaseEdit(c) {
           <datalist id="eDisList">${meta.diseases.map(v => `<option value="${esc(v)}">`).join("")}</datalist></div>
         <div class="field"><label>难度</label><select id="eDiff">${[1, 2, 3].map(v => `<option value="${v}" ${v === c.difficulty ? "selected" : ""}>${esc(diffLabels[v])}</option>`).join("")}</select></div>
         <div class="field"><label>标签（逗号分隔）</label><input id="eTags" value="${esc(c.tags)}"></div>
+        <div class="field full"><label>患者匿名化信息</label>
+          <span class="hint">请勿填写姓名、住院号、身份证号等可识别信息；仅存教学数据库，不写回 DICOM。</span></div>
+        <div class="field"><label>年龄</label><input id="eAge" value="${esc(c.patient_age)}" placeholder="如：56岁 / 3个月"></div>
+        <div class="field"><label>性别</label><select id="eSex">${sexOpts.map(v => `<option value="${esc(v)}" ${v === (c.patient_sex || "") ? "selected" : ""}>${esc(v || "未填写")}</option>`).join("")}</select></div>
+        <div class="field full"><label>主诉</label><input id="eComplaint" value="${esc(c.chief_complaint)}" placeholder="如：反复头痛 3 个月"></div>
+        <div class="field full"><label>病史</label><textarea id="eHistory" placeholder="现病史、既往史、家族史等（匿名化描述）">${esc(c.medical_history)}</textarea></div>
+        <div class="field full"><label>其他临床资料</label><textarea id="eClinical" placeholder="检验结果、检查目的、过敏史等（匿名化描述）">${esc(c.clinical_info)}</textarea></div>
         <div class="field full"><label>教学要点</label><textarea id="eTeach">${esc(c.teaching_points)}</textarea></div>
         <div class="field full"><label>参考诊断</label><textarea id="eDiag">${esc(c.diagnosis)}</textarea></div>
         <div class="field"><label>盲读模式（学生作答后才可见要点/诊断/答案）</label>
@@ -684,6 +707,11 @@ async function renderCaseEdit(c) {
           disease: document.getElementById("eDisease").value.trim(),
           difficulty: parseInt(document.getElementById("eDiff").value) || 1,
           tags: document.getElementById("eTags").value.trim(),
+          patient_age: document.getElementById("eAge").value.trim(),
+          patient_sex: document.getElementById("eSex").value,
+          chief_complaint: document.getElementById("eComplaint").value.trim(),
+          medical_history: document.getElementById("eHistory").value,
+          clinical_info: document.getElementById("eClinical").value,
           teaching_points: document.getElementById("eTeach").value,
           diagnosis: document.getElementById("eDiag").value,
           blind_mode: document.getElementById("eBlind").checked,
@@ -1232,6 +1260,13 @@ async function showImportMetaForm(title, onOk) {
         <div class="field"><label>病名</label><input id="imDis" list="imDisList"><datalist id="imDisList">${meta.diseases.map(v => `<option value="${esc(v)}">`).join("")}</datalist></div>
         <div class="field"><label>难度</label><select id="imDiff">${[1, 2, 3].map(v => `<option value="${v}">${esc(diffLabels[v])}</option>`).join("")}</select></div>
         <div class="field"><label>标签（逗号分隔）</label><input id="imTags"></div>
+        <div class="field full"><label>患者匿名化信息</label>
+          <span class="hint">请勿填写姓名、住院号、身份证号等可识别信息；仅存教学数据库，不写回 DICOM。</span></div>
+        <div class="field"><label>年龄</label><input id="imAge" placeholder="如：56岁 / 3个月"></div>
+        <div class="field"><label>性别</label><select id="imSex"><option value="">未填写</option><option>男</option><option>女</option><option>其他</option><option>未说明</option></select></div>
+        <div class="field full"><label>主诉</label><input id="imComplaint" placeholder="如：反复头痛 3 个月"></div>
+        <div class="field full"><label>病史</label><textarea id="imHistory" placeholder="现病史、既往史、家族史等（匿名化描述）"></textarea></div>
+        <div class="field full"><label>其他临床资料</label><textarea id="imClinical" placeholder="检验结果、检查目的、过敏史等（匿名化描述）"></textarea></div>
         <div class="field"><label>状态</label><select id="imStatus"><option value="draft">草稿</option><option value="published">直接发布</option></select></div>
         <div class="field"><label>盲读模式</label><label style="display:flex;align-items:center;gap:8px;font-size:13.5px"><input type="checkbox" id="imBlind" checked> 开启</label></div>
         <div class="field full"><label>教学要点</label><textarea id="imTeach"></textarea></div>
@@ -1250,6 +1285,11 @@ async function showImportMetaForm(title, onOk) {
     disease: document.getElementById("imDis").value.trim(),
     difficulty: parseInt(document.getElementById("imDiff").value) || 1,
     tags: document.getElementById("imTags").value.trim(),
+    patient_age: document.getElementById("imAge").value.trim(),
+    patient_sex: document.getElementById("imSex").value,
+    chief_complaint: document.getElementById("imComplaint").value.trim(),
+    medical_history: document.getElementById("imHistory").value,
+    clinical_info: document.getElementById("imClinical").value,
     teaching_points: document.getElementById("imTeach").value,
     diagnosis: document.getElementById("imDiag").value,
     status: document.getElementById("imStatus").value,
@@ -1285,6 +1325,13 @@ async function viewUpload() {
         <div class="field"><label>病名</label><input id="upDisease" list="upDisList"><datalist id="upDisList">${meta.diseases.map(v => `<option value="${esc(v)}">`).join("")}</datalist></div>
         <div class="field"><label>难度</label><select id="upDiff">${[1, 2, 3].map(v => `<option value="${v}">${esc(diffLabels[v])}</option>`).join("")}</select></div>
         <div class="field"><label>标签（逗号分隔）</label><input id="upTags"></div>
+        <div class="field full"><label>患者匿名化信息</label>
+          <span class="hint">请勿填写姓名、住院号、身份证号等可识别信息；仅存教学数据库，不写回 DICOM。</span></div>
+        <div class="field"><label>年龄</label><input id="upAge" placeholder="如：56岁 / 3个月"></div>
+        <div class="field"><label>性别</label><select id="upSex"><option value="">未填写</option><option>男</option><option>女</option><option>其他</option><option>未说明</option></select></div>
+        <div class="field full"><label>主诉</label><input id="upComplaint" placeholder="如：反复头痛 3 个月"></div>
+        <div class="field full"><label>病史</label><textarea id="upHistory" placeholder="现病史、既往史、家族史等（匿名化描述）"></textarea></div>
+        <div class="field full"><label>其他临床资料</label><textarea id="upClinical" placeholder="检验结果、检查目的、过敏史等（匿名化描述）"></textarea></div>
         <div class="field full"><label>教学要点</label><textarea id="upTeach"></textarea></div>
         <div class="field full"><label>参考诊断</label><textarea id="upDiag"></textarea></div>
         <div class="field"><label>状态</label><select id="upStatus"><option value="draft">草稿（仅教师可见）</option><option value="published">直接发布</option></select></div>
@@ -1311,6 +1358,11 @@ async function viewUpload() {
       disease: document.getElementById("upDisease").value.trim(),
       difficulty: parseInt(document.getElementById("upDiff").value),
       tags: document.getElementById("upTags").value.trim(),
+      patient_age: document.getElementById("upAge").value.trim(),
+      patient_sex: document.getElementById("upSex").value,
+      chief_complaint: document.getElementById("upComplaint").value.trim(),
+      medical_history: document.getElementById("upHistory").value,
+      clinical_info: document.getElementById("upClinical").value,
       teaching_points: document.getElementById("upTeach").value,
       diagnosis: document.getElementById("upDiag").value,
       status: document.getElementById("upStatus").value,

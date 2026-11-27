@@ -5,6 +5,7 @@ EduPACS 教学病例库系统 部署包
   基于 Orthanc 1.13.0（DICOM 存储 + DICOMweb）+ OHIF Viewer 3.13（官方 OrthancOHIF 插件内嵌）
   + FastAPI/SQLite 教学应用层的一体化医学影像教学平台，满足约 100 名师生内网使用。
   内置：上传即脱敏、盲读模式、教学问答与批阅、学习打卡、学情统计、
+  患者匿名化信息（年龄/性别/主诉/病史/其他临床资料，可在发布与编辑时填写）、
   字典管理（系统/模态/难度/疾病名称，xlsx 导入）、远程 PACS 节点管理与拉取导入、
   图片病例导入（jpg/png 论文截图转 DICOM 教学序列）、
   账号批量管理（xlsx 导入 + 勾选批量删除）。
@@ -24,6 +25,12 @@ EduPACS 教学病例库系统 部署包
   tools/            合成 DICOM 生成器、样例导入脚本、56 个演示 DICOM、32 项冒烟测试
   scripts/          install.ps1 一键安装器（建 venv+依赖/防火墙/快捷方式/开机自启）
                     + launcher.ps1 图形启动器 / start_all.ps1 启动 / stop_all.ps1 安全停止
+                    + install-service.ps1 / uninstall-service.ps1 / service-status.ps1（Windows 服务管理）
+  安装为Windows服务.bat / 卸载Windows服务.bat / 查看服务状态.bat
+                    服务器长期运行推荐：注册为真正的 Windows 服务（开机自启、崩溃自动重启、
+                    无需登录桌面），详见手册 4.3 节方式 A。与计划任务自启二选一。
+  services/         WinSW 服务包装器（EduPACS-Orthanc / EduPACS-App 各一个 exe + xml 配置），
+                    随包内置无需下载；配置用 %BASE% 相对路径，整包搬盘符可用
   docker/           Docker 双轨方案：Dockerfile、docker-compose.yml、Orthanc 容器配置、
                     离线镜像包制作脚本 build-offline-images.sh（产物在开发机 deploy/ 下另行分发）
                     与内网一键部署脚本 deploy-offline.sh，详见手册 4.5 节
@@ -39,8 +46,11 @@ EduPACS 教学病例库系统 部署包
         powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
      手工等价：python -m venv .venv
                 .venv\Scripts\pip install --no-index --find-links wheels -r requirements.lock.txt
-  3. 双击 EduPACS启动器.bat，点「一键启动」
-     （无图形界面环境可运行 scripts\start_all.ps1）
+  3. 启动方式二选一：
+     A. 服务器长期运行（推荐）：右键「安装为Windows服务.bat」→ 以管理员身份运行，
+        两个服务开机自启、后台运行、崩溃自动重启；日常用「查看服务状态.bat」管理。
+     B. 临时/教学演示：双击 EduPACS启动器.bat，点「一键启动」。
+        二者不要同时启用（会抢 8000/8042 端口）。
   4. 浏览器打开 http://<服务器IP>:8000（启动器窗口底部会直接显示局域网地址）
       默认管理员 admin / admin123、演示教师 teacher01 / teach123 —— **首次登录强制修改密码**（弹窗不可跳过）
       演示学生 st001~st200，密码 stXXX@pass（演示账号，不强制改密）
