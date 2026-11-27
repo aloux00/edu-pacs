@@ -120,6 +120,21 @@ def _server_url(url: str) -> str:
     return text
 
 
+def _server_headers(url: str) -> Dict[str, str]:
+    """访问容器内部服务名时，用站点公开 Host 头避免 Moodle wwwroot 重定向。"""
+    host_header = os.environ.get("EDUPACS_LTI_SERVER_HOST_HEADER", "").strip()
+    if not host_header:
+        return {}
+    netloc = urlparse(url).netloc.lower()
+    for pair in os.environ.get("EDUPACS_LTI_SERVER_HOST_MAP", "").split(","):
+        if "=" not in pair:
+            continue
+        internal = pair.split("=", 1)[1].strip().rstrip("/")
+        if urlparse(internal).netloc.lower() == netloc:
+            return {"Host": host_header}
+    return {}
+
+
 def _hash_id(*parts: str) -> str:
     return hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
@@ -214,7 +229,7 @@ def _fetch_jwks(url: str, force: bool = False) -> dict:
     hit = _jwks_cache.get(url)
     if hit and hit[0] > time.time() and not force:
         return hit[1]
-    r = http_client.get(_server_url(url), timeout=8)
+    r = http_client.get(_server_url(url), headers=_server_headers(url), timeout=8)
     r.raise_for_status()
     data = r.json()
     keys = {k["kid"]: k for k in data.get("keys", []) if k.get("kid")}
@@ -608,6 +623,11 @@ def _ags_access_token(reg: dict, sess) -> Optional[str]:
     if not token_endpoint:
         return None
     scope = sess["ags_scope"] or AGS_SCORE_SCOPE
+    if scope.lstrip().startswith("["):  # 兼容旧版本库存的数组字符串
+        try:
+            scope = " ".join(json.loads(scope.replace("'", '"')))
+        except Exception:
+            scope = AGS_SCORE_SCOPE
     cache_key = f"{sess['iss']}|{sess['client_id']}|{scope}"
     hit = _ags_token_cache.get(cache_key)
     if hit and hit[0] > time.time() + 30:
@@ -624,8 +644,11 @@ def _ags_access_token(reg: dict, sess) -> Optional[str]:
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         "client_assertion": assertion,
         "scope": scope,
-    }, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=10)
-    r.raise_for_status()
+    }, headers={"Content-Type": "application/x-www-form-urlencoded",
+                **_server_headers(token_endpoint)}, timeout=10)
+    if not (200 <= r.status_code < 300):
+        _log(f"AGS token 请求失败 status={r.status_code} body={r.text[:300]}")
+        return None
     token = r.json().get("access_token", "")
     if token:
         _ags_token_cache[cache_key] = (time.time() + int(r.json().get("expires_in", 3600)), token)
@@ -639,7 +662,8 @@ def post_grade_for_user(user_id: int, score: float, max_score: float,
         return False
     with DB() as conn:
         sess = conn.execute(
-            "SELECT * FROM lti_sessions WHERE user_id=? AND ags_lineitem!='' "
+            "SELECT * FROM lti_sessions WHERE user_id=? "
+            "AND (ags_lineitem!='' OR ags_endpoint!='') "
             "AND expires_at>=? ORDER BY last_seen DESC LIMIT 1",
             (user_id, int(time.time()))).fetchone()
     if not sess:
@@ -652,6 +676,30 @@ def post_grade_for_user(user_id: int, score: float, max_score: float,
         if not token:
             return False
         lineitem = _server_url(sess["ags_lineitem"])
+        if not lineitem and sess["ags_endpoint"]:
+            # Moodle 4.x 只下发 lineitems 集合地址：先创建一条专用 lineitem，再回写复用
+            endpoint = _server_url(sess["ags_endpoint"])
+            lr = http_client.post(endpoint, json={
+                "label": "EduPACS 教学作答",
+                "scoreMaximum": float(max_score) if max_score else 100.0,
+            }, headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/vnd.ims.lis.v2.lineitem+json",
+                "Accept": "application/vnd.ims.lis.v2.lineitem+json",
+                **_server_headers(endpoint),
+            }, timeout=10)
+            if not (200 <= lr.status_code < 300):
+                raise RuntimeError(f"创建 AGS lineitem 失败 {lr.status_code}: {lr.text[:300]}")
+            created = str(lr.json().get("id", ""))
+            if not created:
+                raise RuntimeError("AGS lineitem 响应缺少 id")
+            lineitem = _server_url(created)
+            with DB() as conn:
+                conn.execute("UPDATE lti_sessions SET ags_lineitem=? WHERE sid=?", (lineitem, sess["sid"]))
+            _log(f"AGS lineitem 已创建 uid={user_id} {created[:120]}")
+        if not lineitem:
+            _log(f"AGS 回传跳过 uid={user_id}：平台未提供 lineitem/lineitems")
+            return False
         payload = {
             "userId": sess["sub"],
             "scoreGiven": float(score),
@@ -662,12 +710,26 @@ def post_grade_for_user(user_id: int, score: float, max_score: float,
         }
         if LTICFG.get("grade_passback", {}).get("comment_on_grade", True):
             payload["comment"] = feedback[:1000]
-        r = http_client.post(lineitem, json=payload, headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/vnd.ims.lis.v2.score+json",
-        }, timeout=10)
-        ok = 200 <= r.status_code < 300
-        _log(f"AGS 回传 {'成功' if ok else '失败'} uid={user_id} status={r.status_code}")
+        # 先按 AGS 2.0 标准提交；Moodle 4.x 使用旧版 /lineitem/scores + v1 类型，失败后自动回退
+        parsed = urlparse(lineitem)
+        legacy_scores = urlunparse(parsed._replace(path=parsed.path.rstrip("/") + "/scores"))
+        attempts = [
+            (lineitem, "application/vnd.ims.lis.v2.score+json"),
+            (legacy_scores, "application/vnd.ims.lis.v1.score+json"),
+        ]
+        ok, last_status, last_body = False, 0, ""
+        for url, ctype in attempts:
+            r = http_client.post(url, json=payload, headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": ctype,
+                **_server_headers(url),
+            }, timeout=10)
+            last_status, last_body = r.status_code, r.text
+            if 200 <= r.status_code < 300:
+                ok = True
+                break
+        _log(f"AGS 回传 {'成功' if ok else '失败'} uid={user_id} status={last_status}" +
+             ("" if ok else f" body={repr(last_body[:400])}"))
         return ok
     except Exception as e:
         _log(f"AGS 回传异常 uid={user_id}: {str(e)[:200]}")
@@ -820,6 +882,11 @@ async def lti_callback(request: Request):
     sid = secrets.token_urlsafe(32)
     now = int(time.time())
     roles = claims.get(LTI_CLAIM + "roles", [])
+    # Moodle 只给 lineitems 集合（不给具体 lineitem）；scope 是数组，需转成空格分隔字符串
+    scope_claim = ags.get("scope", AGS_SCORE_SCOPE)
+    ags_scope = " ".join(scope_claim) if isinstance(scope_claim, list) else str(scope_claim or AGS_SCORE_SCOPE)
+    ags_endpoint = str(ags.get("lineitems", "") or ags.get("endpoint", ""))
+    ags_lineitem = str(ags.get("lineitem", ""))
     with DB() as conn:
         conn.execute(
             "INSERT INTO lti_sessions(sid,user_id,iss,client_id,deployment_id,sub,roles,context_id,resource_link_id,"
@@ -830,8 +897,7 @@ async def lti_callback(request: Request):
              json.dumps(roles, ensure_ascii=False), str(context.get("id", "")),
              str(resource.get("id", "")), case_id, str(launch_presentation.get("return_url", "")),
              str(claims.get("name", ""))[:120], str(claims.get("email", ""))[:160],
-             str(ags.get("endpoint", "")), str(ags.get("lineitem", "")),
-             str(ags.get("scope", AGS_SCORE_SCOPE)), meta.get("token_endpoint", ""),
+             ags_endpoint, ags_lineitem, ags_scope, meta.get("token_endpoint", ""),
              now, now + _ttl(), now))
 
     resp = RedirectResponse(_public_url() + "/#/lti/landing", status_code=303)

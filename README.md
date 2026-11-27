@@ -54,7 +54,7 @@
 
 ## 快速部署（Moodle 一键集成栈，Docker）
 
-进入 `docker/moodle/`，双击 `一键启动.bat`（Linux/macOS：`bash start.sh`）。脚本会自动生成凭据、拉起 Moodle/MariaDB/EduPACS/Orthanc/LRS，在 Moodle 中创建课程与 LTI 1.3 工具并回写 Deployment ID，最后输出访问地址与账号。首次启动需联网拉镜像；详细步骤与排错见 `docker/moodle/docs/Moodle一键集成说明.md`。
+进入 `docker/moodle/`，双击 `一键启动.bat`（Linux/macOS：`bash start.sh`）。脚本会自动生成凭据、拉起 Moodle/MariaDB/EduPACS/Orthanc/LRS，在 Moodle 中创建课程与 LTI 1.3 工具并回写 Deployment ID，最后输出访问地址与账号。首次启动需联网拉镜像；已在 Docker Desktop 上实测通过 OIDC 启动、Deep Linking、xAPI 与 AGS 成绩回传。详细步骤与排错见 `docker/moodle/docs/Moodle一键集成说明.md`。
 
 ## 快速部署（Windows 内网服务器）
 

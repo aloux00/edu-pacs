@@ -68,23 +68,38 @@ compose = (MOODLE_DIR / "docker-compose.moodle.yml").read_text(encoding="utf-8")
 for service in ("mariadb:", "moodle:", "orthanc:", "app:", "lrs:", "bootstrap:"):
     check(f"compose 含服务 {service.strip()}", service in compose)
 check("AGS 主机映射已注入", "EDUPACS_LTI_SERVER_HOST_MAP" in compose)
+check("Host 头映射已注入", "EDUPACS_LTI_SERVER_HOST_HEADER" in compose)
+check("内部端点使用 moodle:8080", "http://moodle:8080" in compose)
+check("镜像使用可拉取的 legacy Moodle", "bitnamilegacy/moodle:4.5" in compose)
+check("Bootstrap 与 Web 同用户", 'user: "1:1"' in compose)
 check("Orthanc 8042 不对外发布", "8042:8042" not in compose)
 check("Bootstrap 为按需 profile", 'profiles: ["tools"]' in compose)
 
 # 3. Moodle 引导脚本关键点
 bootstrap = (MOODLE_DIR / "bootstrap" / "bootstrap.php").read_text(encoding="utf-8")
 for token in ("lti_add_type", "lti_update_type", "LTI_VERSION_1P3", "LTI_JWK_KEYSET",
-              "lti_publickeyset", "lti_initiatelogin", "add_moduleinfo", "lti-result.json"):
+              "lti_publickeyset", "lti_initiatelogin", "add_moduleinfo", "lti-result.json",
+              "purge_all_caches", "curlsecurityblockedhosts", "moduleinfo->module",
+              "ltiservice_gradesynchronization = 2"):
     check(f"bootstrap 使用 {token}", token in bootstrap)
 
+backend = (ROOT / "app" / "backend" / "lti_xapi.py").read_text(encoding="utf-8")
+for token in ("_server_headers", "lineitems", "application/vnd.ims.lis.v1.score+json", "/scores"):
+    check(f"后端兼容 {token}", token in backend)
+
 # 4. 后端容器地址映射
-os.environ["EDUPACS_LTI_SERVER_HOST_MAP"] = "http://localhost:8080=http://moodle"
+os.environ["EDUPACS_LTI_SERVER_HOST_MAP"] = "http://localhost:8080=http://moodle:8080"
+os.environ["EDUPACS_LTI_SERVER_HOST_HEADER"] = "localhost:8080"
 from app.backend import lti_xapi  # noqa: E402
 
 check("AGS 地址映射外部→内部",
-      lti_xapi._server_url("http://localhost:8080/mod/lti/score.php") == "http://moodle/mod/lti/score.php")
+      lti_xapi._server_url("http://localhost:8080/mod/lti/score.php") == "http://moodle:8080/mod/lti/score.php")
 check("无映射地址保持不变",
       lti_xapi._server_url("http://other:9000/x") == "http://other:9000/x")
+check("内部请求带公开 Host 头",
+      lti_xapi._server_headers("http://moodle:8080/mod/lti/certs.php") == {"Host": "localhost:8080"})
+check("外部请求不加 Host 头",
+      lti_xapi._server_headers("http://other:9000/x") == {})
 
 print("-" * 50)
 if failures:

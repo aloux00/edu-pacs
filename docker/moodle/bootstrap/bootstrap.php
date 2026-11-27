@@ -68,6 +68,13 @@ if (!$installed) {
 }
 eb_log('Moodle 已就绪：$CFG->wwwroot = ' . $CFG->wwwroot);
 
+// Moodle 4.5 默认封锁私网地址与 8000 端口，LTI 工具 JWKS 位于 compose 内网的 app:8000。
+// 仅在本集成栈的隔离容器内放行；宿主/公网边界由 compose 端口发布策略控制。
+set_config('curlsecurityblockedhosts', '');
+set_config('curlsecurityallowedport', "80\n443\n8000");
+purge_all_caches(); // 让 Web 进程立即看到新的安全策略
+eb_log('已放行 compose 内部 LTI 服务地址（app:8000）');
+
 $clientid = eb_env('LTI_CLIENT_ID');
 $toolbase = rtrim(eb_env('EDUPACS_LTI_PUBLIC_URL', 'http://localhost:8000'), '/');
 $launchurl = $toolbase . '/lti/callback';
@@ -153,7 +160,8 @@ $config->lti_contentitem = 1;
 $config->lti_toolurl_ContentItemSelectionRequest = $launchurl;
 $config->lti_launchcontainer = LTI_LAUNCH_CONTAINER_WINDOW;
 $config->lti_acceptgrades = LTI_SETTING_DELEGATE;
-$config->ltiservice_gradesynchronization = 1;
+// 2 = 允许创建 lineitem（AGS 写 scope）；仅 1 时 Moodle 只给只读 scope，无法建成绩列
+$config->ltiservice_gradesynchronization = 2;
 $config->lti_sendname = LTI_SETTING_NEVER;
 $config->lti_sendemailaddr = LTI_SETTING_NEVER;
 $config->lti_coursevisible = LTI_COURSEVISIBLE_ACTIVITYCHOOSER;
@@ -190,6 +198,8 @@ if ($existing) {
     $moduleinfo = new stdClass();
     $moduleinfo->course = $course->id;
     $moduleinfo->modulename = 'lti';
+    // add_moduleinfo() 不会自动补 modules.id，必须显式给出，否则 course_modules 插入失败
+    $moduleinfo->module = $DB->get_field('modules', 'id', array('name' => 'lti'));
     $moduleinfo->name = 'EduPACS 影像阅片（LTI 1.3）';
     $moduleinfo->intro = '点击后在 EduPACS 中浏览教学病例并打开 OHIF 阅片器；作答与批阅可回传 Moodle 成绩簿。';
     $moduleinfo->introformat = FORMAT_HTML;
@@ -207,6 +217,7 @@ if ($existing) {
         eb_log('已创建阅片活动 cmid=' . $cmid);
     } catch (Throwable $e) {
         eb_log('阅片活动创建失败：' . $e->getMessage());
+        eb_log('堆栈：' . substr($e->getTraceAsString(), 0, 2000));
         // 工具已注册成功，活动可稍后手工添加；继续输出注册结果
         $cmid = 0;
     }
