@@ -11,6 +11,7 @@
 - **远程 PACS 对接**：DICOM 节点（Modalities）与 Orthanc 节点（Peers）维护、C-ECHO 测试、C-FIND 远程查询、C-MOVE 拉取并自动脱敏入库；设备直推数据（4242）一键导入
 - **字典管理**：系统/模态/难度/疾病名称选项维护，支持 xlsx 模板导入与导出
 - **教学闭环**：盲读模式（作答后解锁要点/诊断/答案）、问答与教师批阅、学习打卡笔记、学情统计
+- **Moodle / LTI 1.3（可选）**：作为 LTI Tool 接入 Moodle，支持 OIDC 单点登录、角色映射、Deep Linking 直接添加病例、AGS 成绩回传；xAPI 语句可送任意 LRS，默认匿名 actor 不泄露 PHI（见 `docs/Moodle集成指南.md`）
 - **图形启动器**：原生 C 启动器（146KB 静态 exe，内嵌多尺寸应用图标，赛博朋克 HUD 界面，状态灯/一键启停/安全停止/CLI 模式 `--status --start --stop`），PowerShell 版作为回退保留。启动器为**系统托盘模式**：任务栏中间无窗口按钮，只在右下角托盘显示图标；点窗口 X 或最小化只是收进托盘（服务照常运行），单击托盘图标显示/隐藏，右键托盘菜单可「显示主窗口 / 一键启动 / 安全停止 / 退出启动器」；重复双击会自动唤起已运行的窗口（单实例）。
 - **跨平台双轨部署**：① Windows 离线安装包（zip + `scripts\install.ps1` 一键安装器，防火墙/快捷方式/开机自启可选）；② Linux 两路线——Ubuntu 原生 apt + systemd（手册 4.4）或 **Docker 离线镜像包**（手册 4.5，官方 orthancteam 镜像 + 自建 app 镜像，内网无外网可部署，安全边界与 Windows 版对齐）
 - **内置备份恢复**：AES-256-GCM 加密归档（.edubak）同机/异机多目的地，网页「备份恢复」页 + CLI `tools\backup.py` 双入口；停机一致性窗口（自动优雅停启 Orthanc）或热备份 WAL 重放，写后自动校验；恢复向导干跑分析→沙箱→正式（回滚保障目录），冒烟 32 项含备份子流程
@@ -34,15 +35,18 @@
 ├── EduPACS启动器.bat        # 双击启动图形启动器
 ├── app/
 │   ├── backend/main.py      # FastAPI 后端（脱敏引擎/教学业务/Orthanc 代理）
+│   ├── backend/lti_xapi.py  # LTI 1.3 + xAPI + AGS 集成模块（默认关闭）
 │   └── static/              # 前端 SPA（原生 JS，无构建步骤）
 ├── orthanc/
 │   ├── Orthanc.exe          # [需自行获取，见下文]
 │   ├── orthanc.json         # Orthanc 配置（含动态维护的远程节点）
 │   └── plugins/             # [需自行获取] DICOMWeb / OHIF / Explorer2 / ServeFolders
+├── config/                  # backup.json / lti.json / xapi.json（外部配置，无硬编码 URL/密钥）
 ├── scripts/                 # install.ps1 一键安装器 + 图形启动器与启停脚本（UTF-8 BOM）
 ├── docker/                  # Docker 双轨方案：Dockerfile / compose / orthanc 配置 / 离线镜像包构建与部署脚本
-├── tools/                   # 演示 DICOM 生成器与样例导入
-├── docs/                    # 部署与使用手册（md + html）
+├── services/                # WinSW 服务定义与.exe（注册为真正的 Windows 服务）
+├── tools/                   # 演示 DICOM 生成器、冒烟测试、LTI/xAPI 自测
+├── docs/                    # 部署与使用手册 + Moodle 集成指南（md + html）
 └── requirements.txt
 ```
 

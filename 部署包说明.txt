@@ -81,8 +81,24 @@ EduPACS 教学病例库系统 部署包
   实测 RetrieveFrames 返回 200；改成 application/dicom 会让 /frames/1 返回 400。
   仍建议使用 Chrome/Edge 100+ 获取最佳体验。
 
-六、详细说明
+六、Moodle / LTI 1.3 / xAPI（可选，默认关闭）
+  - 本版新增 app\backend\lti_xapi.py、config\lti.json、config\xapi.json、docs\Moodle集成指南.md
+  - 不配置时与旧版行为完全一致；/lti/* 返回 503，前端不出现「返回课程」
+  - 启用后：Moodle 内置「外部工具（LTI 1.3）」即可接入，无需装 Moodle 插件
+    1) 在 Moodle 手动配置工具，填 Initiate login URL = <EduPACS>/lti/login
+       Redirection URI = <EduPACS>/lti/callback，公钥类型选 Public keyset URL
+       = <EduPACS>/lti/jwks.json，勾选 Deep Linking 与 Accept grades
+    2) 从 Moodle「View configuration details」复制 Platform ID / Client ID /
+       Deployment ID，回填 config\lti.json 的 iss / client_id / deployment_id，
+       设置 enabled=true 与 public_url（浏览器可访问的地址），重启后端
+    3) xAPI 在 config\xapi.json 开启；LRS 认证建议用环境变量
+       EDUPACS_XAPI_AUTH_HEADER 提供，不写入 Git
+  - 自测：.venv\Scripts\python tools\test_lti_xapi.py（独立端口 8123/8129，不影响 8000）
+  - 排错：app\data\integrations.log；GET /api/xapi/queue 查看 xAPI 发送状态
+
+七、详细说明
   见 docs\部署与使用手册.md / .html（第 5 节影像接入、第 6 节字典管理、第 7 节远程节点、10.1 节备份恢复）
+  见 docs\Moodle集成指南.md（LTI 1.3 / Deep Linking / xAPI / AGS 成绩回传完整步骤）
 
 
 AI生成

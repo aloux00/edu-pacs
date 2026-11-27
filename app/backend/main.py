@@ -34,6 +34,8 @@ from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage, generate_uid
 from pydantic import BaseModel
 
+from . import lti_xapi  # LTI 1.3 + xAPI 集成（默认关闭，配置见 config/lti.json / xapi.json）
+
 ROOT = Path(__file__).resolve().parent.parent.parent          # edu-pacs/
 DATA = ROOT / "app" / "data"
 DATA.mkdir(parents=True, exist_ok=True)
@@ -341,6 +343,10 @@ def row_dict(row) -> dict:
 
 def rows_list(rows) -> list:
     return [row_dict(r) for r in rows]
+
+
+# 集成模块初始化：读取外部配置、建增量表、启动 xAPI 发送线程（未启用时零副作用）
+lti_xapi.setup(ROOT, db, make_token, hash_password, row_dict, SECRET)
 
 
 def sanitize_filename(name: str) -> str:
@@ -1483,7 +1489,7 @@ def get_meta(user=Depends(current_user)):
 
 
 @app.get("/api/cases/{case_id}")
-def get_case(case_id: int, user=Depends(current_user)):
+def get_case(case_id: int, request: Request, user=Depends(current_user)):
     with db() as conn:
         c = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
         if not c:
@@ -1529,6 +1535,11 @@ def get_case(case_id: int, user=Depends(current_user)):
                 counts[m["id"]] = m["n"]
         for q in qs:
             q["submission_count"] = counts.get(q["id"], 0)
+    if user["role"] == "student":
+        try:
+            lti_xapi.track_event(request, "viewed", case_id=case_id, title=data.get("title", ""))
+        except Exception:
+            pass  # 学习记录不能因为 LRS 故障而中断阅课
     return data | {"questions": qs}
 
 
@@ -1987,7 +1998,7 @@ class AnswerBody(BaseModel):
 
 
 @app.post("/api/questions/{qid}/submit")
-def submit_answer(qid: int, body: AnswerBody, user=Depends(require_roles("student"))):
+def submit_answer(qid: int, body: AnswerBody, request: Request, user=Depends(require_roles("student"))):
     with db() as conn:
         q = conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
         if not q:
@@ -2004,6 +2015,11 @@ def submit_answer(qid: int, body: AnswerBody, user=Depends(require_roles("studen
                 "INSERT INTO submissions(question_id,student_id,answer) VALUES(?,?,?)",
                 (qid, user["id"], body.answer))
             sid = cur.lastrowid
+    try:
+        lti_xapi.track_event(request, "answered", case_id=q["case_id"], question_id=qid,
+                             response=body.answer, title=q["question"])
+    except Exception:
+        pass
     return {"id": sid}
 
 
@@ -2027,7 +2043,7 @@ class GradeBody(BaseModel):
 
 
 @app.post("/api/submissions/{sid}/grade")
-def grade_submission(sid: int, body: GradeBody, user=Depends(require_roles("admin", "teacher"))):
+def grade_submission(sid: int, body: GradeBody, request: Request, user=Depends(require_roles("admin", "teacher"))):
     with db() as conn:
         s = conn.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone()
         if not s:
@@ -2037,6 +2053,15 @@ def grade_submission(sid: int, body: GradeBody, user=Depends(require_roles("admi
         conn.execute(
             "UPDATE submissions SET score=?, feedback=?, status='graded', graded_at=datetime('now','localtime'), "
             "graded_by=? WHERE id=?", (score, body.feedback, user["username"], sid))
+    # 成绩回传 Moodle（AGS）与 xAPI：失败只记日志，不影响批阅成功
+    try:
+        max_score = float(q["score"]) if q else score
+        lti_xapi.post_grade_for_user(s["student_id"], score, max_score, body.feedback)
+        lti_xapi.track_event(request, "graded", user_id=s["student_id"],
+                             question_id=s["question_id"], score=score,
+                             max_score=max_score, title="教师批阅")
+    except Exception:
+        pass
     return {"ok": True, "score": score}
 
 
@@ -2047,7 +2072,7 @@ class ProgressBody(BaseModel):
 
 
 @app.post("/api/progress")
-def touch_progress(body: ProgressBody, user=Depends(require_roles("student"))):
+def touch_progress(body: ProgressBody, request: Request, user=Depends(require_roles("student"))):
     with db() as conn:
         row = conn.execute("SELECT * FROM progress WHERE student_id=? AND case_id=?",
                            (user["id"], body.case_id)).fetchone()
@@ -2060,7 +2085,11 @@ def touch_progress(body: ProgressBody, user=Depends(require_roles("student"))):
                          (user["id"], body.case_id, body.note))
         p = conn.execute("SELECT * FROM progress WHERE student_id=? AND case_id=?",
                          (user["id"], body.case_id)).fetchone()
-        return row_dict(p)
+    try:
+        lti_xapi.track_event(request, "viewer_opened", case_id=body.case_id)
+    except Exception:
+        pass
+    return row_dict(p)
 
 
 @app.get("/api/my/progress")
@@ -2130,7 +2159,9 @@ init_db()  # 模块导入时确保数据库就绪（幂等）
 
 @app.get("/api/config")
 def front_config():
-    return {"orthanc_origin": ORTHANC_URL, "viewer_base": ORTHANC_URL + "/ohif"}
+    return {"orthanc_origin": ORTHANC_URL, "viewer_base": ORTHANC_URL + "/ohif",
+            "lti_enabled": lti_xapi._enabled(),
+            "xapi_enabled": bool(lti_xapi.XAPICFG.get("enabled") and lti_xapi.XAPICFG.get("endpoint"))}
 
 
 @app.get("/favicon.ico")
@@ -2442,6 +2473,9 @@ def backup_config_save(payload: dict, user: sqlite3.Row = Depends(require_roles(
     bc.save_config({"version": 1, "destinations": dests})
     return {"ok": True, "config": bc.load_config()}
 
+
+# LTI 1.3 / xAPI 路由必须在静态目录挂载之前注册，否则会被 SPA 兜底路由吞掉
+app.include_router(lti_xapi.router)
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 

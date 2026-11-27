@@ -5,6 +5,7 @@ const state = {
   token: localStorage.getItem("edupacs_token") || "",
   user: JSON.parse(localStorage.getItem("edupacs_user") || "null"),
   config: { orthanc_origin: "http://127.0.0.1:8042" },
+  lti: null, // Moodle LTI 1.3 启动上下文（由 /api/lti/session 注入）
 };
 const FORCE_PWD_ID = "forcePwdOverlay"; // 强制改密遮罩的唯一 id，便于幂等清理
 
@@ -57,6 +58,9 @@ function logout() {
   state.user = null;
   localStorage.removeItem("edupacs_token");
   localStorage.removeItem("edupacs_user");
+  state.lti = null;
+  // 同步清理 Moodle LTI 会话 Cookie，避免下次本地登录仍被识别为 LTI 会话
+  fetch("/api/lti/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   // 兜底：任何登出路径（含 401 自动登出）都要清掉强制改密遮罩
   document.getElementById(FORCE_PWD_ID)?.remove();
   location.hash = "#/login";
@@ -152,6 +156,7 @@ function layout(contentHtml, activeHash) {
         <div class="user-box">
           <div class="avatar">${esc(name.slice(0, 1))}</div>
           <span>${esc(name)}<br><span style="font-size:11px;opacity:.8">${roleLabel}</span></span>
+          ${state.lti && state.lti.return_url ? `<a href="${esc(state.lti.return_url)}" title="返回 Moodle 课程">返回课程</a>` : ""}
           <a href="javascript:void(0)" id="logoutBtn">退出</a>
         </div>
       </div>
@@ -159,6 +164,35 @@ function layout(contentHtml, activeHash) {
     <main class="container">${contentHtml}</main>`;
   document.getElementById("logoutBtn").onclick = () => { logout(); toast("已退出登录"); };
   if (state.user && state.user.must_change_pwd) showForceChangePwd();
+}
+
+/* ---------------- Moodle LTI 1.3 落地页 ---------------- */
+async function viewLtiLanding() {
+  $app.innerHTML = `
+    <div class="login-wrap"><div class="login-card" style="text-align:center">
+      <div class="login-logo"><div class="circle">教</div></div>
+      <h2 style="font-size:18px;margin:14px 0 8px">正在从 Moodle 进入 EduPACS</h2>
+      <div class="muted" id="ltiLandingMsg">正在验证课程身份…</div>
+    </div></div>`;
+  try {
+    const r = await fetch("/api/lti/session", { credentials: "same-origin" });
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* ignore */ }
+    if (!r.ok || !data || !data.token) {
+      throw new Error((data && data.detail) || "LTI 会话无效，请从 Moodle 课程重新进入");
+    }
+    saveAuth(data.token, data.user);
+    state.lti = data.lti || {};
+    state.config = Object.assign(await api("/api/config"), { _loaded: true });
+    document.getElementById("ltiLandingMsg").textContent = "验证成功，正在打开病例…";
+    const target = state.lti.case_id
+      ? "#/case/" + state.lti.case_id
+      : (data.user.role === "student" ? "#/cases" : "#/dashboard");
+    setTimeout(() => { location.hash = target; }, 150);
+  } catch (e) {
+    document.getElementById("ltiLandingMsg").textContent = e.message;
+    setTimeout(() => { location.hash = "#/login"; }, 1800);
+  }
 }
 
 /* ---------------- 登录 ---------------- */
@@ -2017,6 +2051,7 @@ function bkCfgRender() {
 /* ---------------- 路由 ---------------- */
 async function router() {
   const hash = location.hash || "#/dashboard";
+  if (hash === "#/lti/landing") { await viewLtiLanding(); return; }
   if (!state.user || hash === "#/login") { viewLogin(); return; }
   try {
     if (!state.config._loaded) {
