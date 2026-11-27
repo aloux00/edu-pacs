@@ -26,7 +26,7 @@ import numpy as np
 import pydicom
 import requests as http_client
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -2139,8 +2139,77 @@ async def proxy_ohif_root(request: Request):
     return RedirectResponse("/ohif/", status_code=307)
 
 
+# OHIF 3.13 的 bundle 使用了 ES2022 静态初始化块（static { }），Chrome/Edge 85~90
+# 会在此处抛 SyntaxError: Unexpected token '{'。在同源代理层降级为静态字段 IIFE，
+# 语法等价且兼容 Chrome/Edge 80+。同时屏蔽 HTTP 环境下 serviceWorker 未定义的报错。
+_OHIF_JS_CACHE: dict = {}
+
+
+def _downlevel_ohif_js(text: str) -> tuple:
+    out, i, n = [], 0, 0
+    while True:
+        j = text.find("static {", i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        k, depth, quote, esc = j + 8, 1, None, False   # len("static {") == 8
+        while depth and k < len(text):
+            ch = text[k]
+            if quote:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == quote:
+                    quote = None
+            else:
+                if ch in "'\"`":
+                    quote = ch
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+            k += 1
+        body = text[j + 8:k - 1]
+        n += 1
+        out.append(text[i:j])
+        out.append(f"static __ohifStaticInit{n} = (() => {{{body}}})();")
+        i = k
+    patched = "".join(out)
+    if "navigator.serviceWorker.getRegistrations" in patched:
+        patched = patched.replace(
+            "navigator.serviceWorker.getRegistrations()",
+            "(navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : Promise.resolve([]))",
+            1,
+        )
+    return patched, n
+
+
+async def _proxy_ohif_js(request: Request, path: str):
+    url = ORTHANC_URL + "/ohif/" + path
+    if request.url.query:
+        url += "?" + str(request.url.query)
+    try:
+        up = http_client.get(url, auth=ORTHANC_AUTH, timeout=ORTHANC_TIMEOUT)
+    except Exception as e:
+        raise HTTPException(502, f"Orthanc 不可达：{str(e)[:150]}")
+    key = (path, up.headers.get("ETag"), len(up.content))
+    cached = _OHIF_JS_CACHE.get(key)
+    if cached is None:
+        patched, _ = _downlevel_ohif_js(up.content.decode("utf-8", "replace"))
+        cached = patched.encode("utf-8")
+        _OHIF_JS_CACHE.clear()
+        _OHIF_JS_CACHE[key] = cached
+    return Response(content=b"" if request.method == "HEAD" else cached,
+                    status_code=up.status_code,
+                    media_type="application/javascript",
+                    headers={"Cache-Control": "no-cache"})
+
+
 @app.api_route("/ohif/{path:path}", methods=["GET", "HEAD"])
 async def proxy_ohif(path: str, request: Request):
+    if path.endswith(".js"):
+        return await _proxy_ohif_js(request, path)
     return await _proxy_to_orthanc(request, f"/ohif/{path}")
 
 

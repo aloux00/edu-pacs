@@ -13,8 +13,12 @@ EduPACS 教学病例库系统 部署包
 
 二、本包内容
   EduPACS启动器.bat  【推荐】双击打开启动器（原生 exe 优先，找不到时回退 PowerShell 版）
-  EduPACS启动器.exe  原生 C 语言启动器（193KB 静态链接无依赖，赛博朋克 HUD 界面，
+  EduPACS启动器.exe  原生 C 语言启动器（146KB 静态链接无依赖，赛博朋克 HUD 界面，
                     内嵌多尺寸应用图标，支持 --status/--start/--stop）
+                    ★ 托盘模式：启动后只在任务栏右下角托盘显示图标，任务栏中间不出现窗口按钮；
+                      点窗口 X 或最小化只是收进托盘（服务照常运行），单击托盘图标显示/隐藏主窗口，
+                      右键托盘图标可「显示主窗口 / 一键启动 / 安全停止 / 退出启动器」；
+                      重复双击启动器会自动唤起已运行的窗口，不会重复开图标。
   orthanc/          Orthanc 服务端（主程序 + 4 个官方插件 + 配置 + 影像存储，含演示病例）
   app/              教学系统后端 + 前端（SPA 纯静态，无外网依赖）+ 应用数据库（含演示账号与病例）
   tools/            合成 DICOM 生成器、样例导入脚本、56 个演示 DICOM、32 项冒烟测试
@@ -59,6 +63,13 @@ EduPACS 教学病例库系统 部署包
      产出 EduPACS-Docker离线镜像包-<日期>.tar.gz（另分分发）；内网 Ubuntu Server 解压后
      `sudo bash deploy-offline.sh` 一条命令完成部署；安全边界与 Windows 版对齐
      （8042 仅容器网络内部可达 + 认证，师生仍只访问 8000）。详见手册 4.5 节。
+  包15 修复：OHIF 3.13 bundle 使用 ES2022 静态块，Chrome/Edge 85~90 会报
+  Unexpected token '{'，导致病例列表可见但阅片器全黑；代理层已降级为兼容写法，
+  并屏蔽 HTTP 下 serviceWorker 未定义报错。
+  注意：app-config.js 的 WADO Accept 必须保留 Orthanc 原生默认
+  （multipart/related; type=application/octet-stream; transfer-syntax=*），
+  实测 RetrieveFrames 返回 200；改成 application/dicom 会让 /frames/1 返回 400。
+  仍建议使用 Chrome/Edge 100+ 获取最佳体验。
 
 六、详细说明
   见 docs\部署与使用手册.md / .html（第 5 节影像接入、第 6 节字典管理、第 7 节远程节点、10.1 节备份恢复）

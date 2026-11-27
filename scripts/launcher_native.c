@@ -10,6 +10,8 @@
  *   - 一键停止：安全停止——只结束命令行可证明属于本项目的进程（路径含项目根或 app.backend.main），
  *               不按端口+进程名盲杀，不误杀同机其它服务
  *   - 快捷按钮：打开教学系统 / 打开 Orthanc 后台（浏览器优先 Edge/Chrome 硬编码路径，兼容精简系统）
+ *   - 系统托盘：程序只在任务栏右下角托盘显示图标，不在任务栏中间出现窗口按钮；
+ *               最小化或点 X 只收进托盘（不退出），单击托盘图标显示/隐藏，右键菜单可真正退出。
  *
  * 命令行模式（供脚本调用，输出 UTF-8）：
  *   EduPACS启动器.exe --status    查看状态，退出码 0=两服务就绪，1=有服务未就绪
@@ -43,8 +45,16 @@
 /* ---------------------------------------------------------------- 全局 */
 #define WM_APP_STATUS   (WM_APP + 1)   /* wParam=Orthanc探测码 lParam=App探测码 */
 #define WM_APP_DONE     (WM_APP + 2)   /* wParam=ok|job<<16  lParam=堆上 wchar_t* 文本 */
+#define WM_TRAYICON     (WM_APP + 3)   /* 托盘图标回调：lParam=鼠标消息 */
 
 #define IDI_APPICON     200   /* 应用图标资源（见 scripts/launcher.rc） */
+
+/* 托盘图标与右键菜单 ID */
+#define IDT_TRAY        1
+#define IDM_TRAY_SHOW   301
+#define IDM_TRAY_START  302
+#define IDM_TRAY_STOP   303
+#define IDM_TRAY_EXIT   304
 
 #define IDC_TITLE       101
 #define IDC_ST_O        102
@@ -77,6 +87,9 @@ static CRITICAL_SECTION g_cs;               /* 保护 g_job */
 static int   g_job = -1;                    /* 待执行任务，-1 无 */
 static int   g_scan_y = 0;                 /* 扫描线 Y（动画） */
 static int   g_hover = 0;                  /* 当前 hover 的按钮 ID（0=无） */
+static NOTIFYICONDATAW g_nid;              /* 系统托盘图标 */
+static int   g_tray_added = 0;
+static UINT  g_wmTaskbarCreated = 0;       /* 资源管理器重启后需重建托盘图标 */
 
 /* 赛博朋克配色 */
 #define BG_TOP     RGB(5, 9, 18)
@@ -737,6 +750,89 @@ static void draw_button(DRAWITEMSTRUCT *dis)
     }
 }
 
+/* ---------------------------------------------------------------- 系统托盘 */
+static void tray_tip(char *buf, size_t len)
+{
+    const char *so = g_st_o == 1 ? "正常" : (g_st_o == 2 ? "认证不匹配" : (g_st_o < 0 ? "检测中" : "未运行"));
+    const char *sa = g_st_a == 1 ? "正常" : (g_st_a == 2 ? "认证不匹配" : (g_st_a < 0 ? "检测中" : "未运行"));
+    snprintf(buf, len, "EduPACS 启动器\nOrthanc:%s · 教学系统:%s\n单击显示/隐藏 · 右键菜单",
+             so, sa);
+}
+
+static void tray_add(HWND hwnd)
+{
+    char tip[256];
+    ZeroMemory(&g_nid, sizeof g_nid);
+    g_nid.cbSize = sizeof g_nid;
+    g_nid.hWnd = hwnd;
+    g_nid.uID = IDT_TRAY;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_TRAYICON;
+    g_nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(NULL),
+                    MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON, 16, 16, LR_SHARED);
+    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    tray_tip(tip, sizeof tip);
+    {
+        wchar_t wtip[256];
+        MultiByteToWideChar(CP_UTF8, 0, tip, -1, wtip, 256);
+        lstrcpynW(g_nid.szTip, wtip, (int)(sizeof g_nid.szTip / sizeof g_nid.szTip[0]));
+    }
+    if (Shell_NotifyIconW(NIM_ADD, &g_nid)) g_tray_added = 1;
+    g_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+}
+
+static void tray_remove(void)
+{
+    if (g_tray_added) {
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        g_tray_added = 0;
+    }
+}
+
+static void tray_refresh_tip(void)
+{
+    char tip[256];
+    wchar_t wtip[256];
+    if (!g_tray_added) return;
+    tray_tip(tip, sizeof tip);
+    MultiByteToWideChar(CP_UTF8, 0, tip, -1, wtip, 256);
+    lstrcpynW(g_nid.szTip, wtip, (int)(sizeof g_nid.szTip / sizeof g_nid.szTip[0]));
+    g_nid.uFlags = NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
+
+static void show_tray_menu(HWND hwnd)
+{
+    POINT pt;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_SHOW,  u8("显示主窗口"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_START, u8("一键启动服务"));
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_STOP,  u8("安全停止服务"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT,  u8("退出启动器（不影响已启动的服务）"));
+    if (GetCursorPos(&pt)) {
+        SetForegroundWindow(hwnd);   /* 关键：让菜单点击其他位置能正常消失 */
+        TrackPopupMenuEx(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, hwnd, NULL);
+        PostMessageW(hwnd, WM_NULL, 0, 0);  /* 关键：吃掉菜单关闭时的点击 */
+    }
+    DestroyMenu(menu);
+}
+
+static void restore_window(HWND hwnd)
+{
+    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+}
+
+static void hide_to_tray(HWND hwnd)
+{
+    ShowWindow(hwnd, SW_HIDE);   /* 从任务栏彻底消失，只留右下角托盘图标 */
+    tray_refresh_tip();
+}
+
 /* ---------------------------------------------------------------- 窗口过程 */
 static void update_status_text(HWND hwnd, int code, int id, int *st, const char *name)
 {
@@ -830,6 +926,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetTimer(hwnd, TIMER_REFRESH, 2000, NULL);
         SetTimer(hwnd, TIMER_SCAN, 40, NULL);
         tme.cbSize = sizeof tme; tme.dwFlags = TME_LEAVE; tme.hwndTrack = hwnd;
+        tray_add(hwnd);                  /* 注册右下角托盘图标 */
         post_job(JOB_REFRESH);           /* 立即做一次状态检查 */
         return 0;
     }
@@ -847,6 +944,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PRINTCLIENT:                   /* 打印/截图支持 */
         paint_bg((HDC)wp, 500, 380);
         return 0;
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED) {
+            hide_to_tray(hwnd);            /* 最小化 = 收进托盘，不从右下角消失 */
+            return 0;
+        }
+        break;
     case WM_TIMER:
         if (wp == TIMER_SCAN) {
             g_scan_y = (g_scan_y + 2) % 4000;
@@ -901,6 +1004,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_STATUS:
         update_status_text(hwnd, (int)wp, IDC_ST_O, &g_st_o, "Orthanc");
         update_status_text(hwnd, (int)lp, IDC_ST_A, &g_st_a, "教学系统");
+        tray_refresh_tip();
         return 0;
     case WM_APP_DONE: {
         int job = (int)(wp >> 16) & 0xffff;
@@ -920,9 +1024,38 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             open_url(L"http://127.0.0.1:8000");
         return 0;
     }
+    case WM_TRAYICON:
+        if (lp == WM_LBUTTONUP || lp == WM_LBUTTONDBLCLK) {
+            restore_window(hwnd);               /* 单击/双击托盘图标：显示主窗口 */
+        } else if (lp == WM_RBUTTONUP) {
+            show_tray_menu(hwnd);
+        }
+        return 0;
     case WM_COMMAND: {
         int id = LOWORD(wp);
-        if (id == IDC_BTN_START && !g_busy) {
+        if (id == IDM_TRAY_SHOW) {
+            restore_window(hwnd);
+        } else if (id == IDM_TRAY_EXIT) {
+            PostMessageW(hwnd, WM_CLOSE, 1, 0); /* 托盘菜单：真正退出（wp=1 标记） */
+            return 0;
+        } else if (id == IDM_TRAY_START) {
+            if (!g_busy) {
+                g_busy = 1;
+                EnableWindow(GetDlgItem(hwnd, IDC_BTN_START), FALSE);
+                EnableWindow(GetDlgItem(hwnd, IDC_BTN_STOP), FALSE);
+                SetWindowTextW(GetDlgItem(hwnd, IDC_STATUS),
+                               u8("> 正在启动服务…（最长等待 50 秒）"));
+                post_job(JOB_START);
+            }
+        } else if (id == IDM_TRAY_STOP) {
+            if (!g_busy) {
+                g_busy = 1;
+                EnableWindow(GetDlgItem(hwnd, IDC_BTN_START), FALSE);
+                EnableWindow(GetDlgItem(hwnd, IDC_BTN_STOP), FALSE);
+                SetWindowTextW(GetDlgItem(hwnd, IDC_STATUS), u8("> 正在安全停止服务…"));
+                post_job(JOB_STOP);
+            }
+        } else if (id == IDC_BTN_START && !g_busy) {
             g_busy = 1;
             EnableWindow(GetDlgItem(hwnd, IDC_BTN_START), FALSE);
             EnableWindow(GetDlgItem(hwnd, IDC_BTN_STOP), FALSE);
@@ -969,13 +1102,25 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return (LRESULT)br;                     /* 由系统 DeleteObject 临时画刷 */
     }
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        /* 点 X / 菜单退出都收进托盘？不：区分来源——菜单退出带 wp=1，其余收进托盘 */
+        if (wp == 1) {
+            tray_remove();
+            DestroyWindow(hwnd);
+        } else {
+            hide_to_tray(hwnd);          /* 点窗口 X：只是收进托盘，服务照常运行 */
+        }
         return 0;
     case WM_DESTROY:
+        tray_remove();
         KillTimer(hwnd, TIMER_REFRESH);
         KillTimer(hwnd, TIMER_SCAN);
         KillTimer(hwnd, TIMER_TRAK);
         PostQuitMessage(0);
+        return 0;
+    }
+    /* 资源管理器重启后 TaskbarCreated 消息：重建托盘图标 */
+    if (g_wmTaskbarCreated && msg == g_wmTaskbarCreated) {
+        tray_add(hwnd);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -983,6 +1128,19 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static int run_gui(void)
 {
+    /* 单实例：已运行则把旧窗口显示出来后退出，避免托盘出现重复图标 */
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"EduPacsLauncher_SingleInstance");
+    if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND old = FindWindowW(L"EduPacsLauncherWnd", NULL);
+        if (old) {
+            ShowWindow(old, SW_SHOW);
+            ShowWindow(old, SW_RESTORE);
+            SetForegroundWindow(old);
+        }
+        CloseHandle(hMutex);
+        return 0;
+    }
+
     WNDCLASSEXW wc;
     ZeroMemory(&wc, sizeof wc);
     wc.cbSize = sizeof wc;
@@ -1003,7 +1161,8 @@ static int run_gui(void)
     RECT r = { 0, 0, 500, 382 };
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
 
-    g_hwnd = CreateWindowW(wc.lpszClassName, u8("EduPACS 教学病例库启动器"),
+    g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW,   /* 不出现在任务栏中间/Alt-Tab，只在右下角托盘 */
+                           wc.lpszClassName, u8("EduPACS 教学病例库启动器"),
                            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
                            | WS_CLIPCHILDREN,   /* 背景重绘不覆盖子控件（扫描线动画关键） */
                            CW_USEDEFAULT, CW_USEDEFAULT,

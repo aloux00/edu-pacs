@@ -84,6 +84,9 @@ docker compose up -d
 |---|---|
 | 部署后 8000 打不开 | `docker compose ps` 看容器状态；`docker compose logs --tail=100 app` |
 | OHIF 阅片空白 | 容器内探测：`docker compose exec app python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/orthanc/health',timeout=8).read().decode())"` 应含 `"ok": true`；否则查 `.env` 凭据与 orthanc 容器日志 |
+| 病例列表可见但阅片器全黑 | 实际根因多为 OHIF 3.13 bundle 的 ES2022 静态块在 Chrome/Edge 85~90 报 `Unexpected token '{'`，脚本中断导致无图像。包15 已在代理层降级静态块；旧容器可临时 `docker cp app/backend/main.py edupacs-app:/edu-pacs/app/backend/main.py && docker compose restart app`，永久修复请重建 app 镜像 |
+| `/frames/1` 返回 400、`Couldn't retrieve ... frames/1` | Orthanc 26.9.1 的 RetrieveFrames **只接受** `multipart/related; type=application/octet-stream; transfer-syntax=*`。不要把 `app-config.js` 的 `acceptHeader` 改成 `application/dicom`（那是 RetrieveInstance 的类型，会破坏 frames）。保持 Orthanc 原生配置即可 |
+| 控制台 `getRegistrations of undefined` | HTTP 非 localhost 下 `navigator.serviceWorker` 不存在，OHIF 脚本未判空。包15 已在代理层加三元守卫；该报错本身不影响阅片 |
 | 改了 `.env` 没生效 | `docker compose up -d`（会按新环境重建容器） |
 | 设备直推收不到 | 检查 `ufw allow 4242/tcp` 与设备端 AET 配置 `EDUPACS@<IP>:4242` |
 | 从远程 PACS 拉片（C-MOVE）失败 | 对端 PACS 上 EDUPACS 节点地址必须配成**宿主机 IP:4242**（发布端口）。bridge 网络下容器对外连接经 NAT 源地址为宿主机 IP，多数 PACS 可正常回连；个别 PACS 拿容器内地址回连失败时改用 host 网络：把 compose 里两个服务的 `ports` 段删掉，`orthanc` 与 `app` 都加 `network_mode: host`，`app` 环境变量 `ORTHANC_URL` 改 `http://127.0.0.1:8042`，`orthanc-docker.json` 的 `RemoteAccessAllowed` 改 `false`（8042 仍仅本机可达，安全不变） |
