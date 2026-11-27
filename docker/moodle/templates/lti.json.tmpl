@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "enabled": true,
+  "public_url": "http://__EDUPACS_PUBLIC_HOST__",
+  "session_ttl_hours": 12,
+  "cookie_secure": false,
+  "auto_provision": true,
+  "default_role": "student",
+  "use_lti_name": true,
+  "role_map": {
+    "Administrator": "admin",
+    "Instructor": "teacher",
+    "TeachingAssistant": "teacher",
+    "Learner": "student"
+  },
+  "grade_passback": {
+    "enabled": true,
+    "comment_on_grade": true
+  },
+  "registrations": [
+    {
+      "id": "moodle-main",
+      "label": "Moodle 教学平台（Docker 一键集成）",
+      "iss": "http://__MOODLE_PUBLIC_HOST__",
+      "client_id": "__LTI_CLIENT_ID__",
+      "deployment_id": "__LTI_DEPLOYMENT_ID__",
+      "discovery_url": "",
+      "authorization_endpoint": "http://moodle/mod/lti/auth.php",
+      "jwks_url": "http://moodle/mod/lti/certs.php",
+      "token_endpoint": "http://moodle/mod/lti/token.php",
+      "target_link_uri": "http://__EDUPACS_PUBLIC_HOST__/lti/callback"
+    }
+  ]
+}

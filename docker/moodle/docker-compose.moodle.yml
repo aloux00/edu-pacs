@@ -1,0 +1,185 @@
+# EduPACS + Moodle + OHIF + LTI 1.3 + xAPI 一键集成栈
+# ============================================================
+# 目录：以本文件所在目录为 compose 根目录（docker/moodle）
+#   docker compose -f docker-compose.moodle.yml up -d --build
+#   docker compose -f docker-compose.moodle.yml --profile tools run --rm bootstrap
+#
+# 网络边界：
+#   Moodle      浏览器访问 http://${MOODLE_PUBLIC_HOST}
+#   EduPACS     浏览器访问 http://${EDUPACS_PUBLIC_HOST}（含 /ohif 阅片反代）
+#   Orthanc     仅容器网络内可达，不发布 8042
+#   LRS         仅容器网络内可达，xAPI 由 EduPACS 后端投递
+#
+# 重要：Moodle 生成的 AGS lineitem 使用浏览器可见的 wwwroot（如 localhost:8080），
+#       EduPACS 容器内通过 EDUPACS_LTI_SERVER_HOST_MAP 改走服务名 moodle:80。
+#       ID Token 的 iss 校验仍使用浏览器可见地址，不受此映射影响。
+
+name: edupacs-moodle
+
+services:
+  mariadb:
+    image: ${MARIADB_IMAGE:-docker.io/bitnami/mariadb:11.2}
+    container_name: edupacs-moodle-db
+    restart: unless-stopped
+    environment:
+      ALLOW_EMPTY_PASSWORD: "no"
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASS:?请在 .env 中设置 MARIADB_ROOT_PASS}
+      MARIADB_DATABASE: ${MOODLE_DB_NAME:-bitnami_moodle}
+      MARIADB_USER: ${MOODLE_DB_USER:-bn_moodle}
+      MARIADB_PASSWORD: ${MOODLE_DB_PASS:?请在 .env 中设置 MOODLE_DB_PASS}
+      MARIADB_CHARACTER_SET: utf8mb4
+      MARIADB_COLLATE: utf8mb4_unicode_ci
+    volumes:
+      - moodle-db:/bitnami/mariadb
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -u root -p\"$$MARIADB_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  moodle:
+    image: ${MOODLE_IMAGE:-docker.io/bitnami/moodle:4.5}
+    container_name: edupacs-moodle
+    restart: unless-stopped
+    ports:
+      - "${MOODLE_PORT:-8080}:8080"
+    environment:
+      ALLOW_EMPTY_PASSWORD: "no"
+      MOODLE_HOST: ${MOODLE_PUBLIC_HOST:-localhost:8080}
+      MOODLE_SITE_NAME: ${MOODLE_SITE_NAME:-EduPACS 教学平台}
+      MOODLE_LANG: ${MOODLE_LANG:-zh_cn}
+      MOODLE_USERNAME: ${MOODLE_ADMIN_USER:-admin}
+      MOODLE_PASSWORD: ${MOODLE_ADMIN_PASS:?请在 .env 中设置 MOODLE_ADMIN_PASS}
+      MOODLE_EMAIL: ${MOODLE_ADMIN_EMAIL:-admin@example.local}
+      MOODLE_DATABASE_TYPE: mariadb
+      MOODLE_DATABASE_HOST: mariadb
+      MOODLE_DATABASE_PORT_NUMBER: "3306"
+      MOODLE_DATABASE_NAME: ${MOODLE_DB_NAME:-bitnami_moodle}
+      MOODLE_DATABASE_USER: ${MOODLE_DB_USER:-bn_moodle}
+      MOODLE_DATABASE_PASSWORD: ${MOODLE_DB_PASS:?请在 .env 中设置 MOODLE_DB_PASS}
+    volumes:
+      - moodle-app:/bitnami/moodle
+      - moodle-data:/bitnami/moodledata
+      - ./bootstrap:/bootstrap:ro
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  orthanc:
+    image: ${ORTHANC_IMAGE:-orthancteam/orthanc:26.9.1}
+    container_name: edupacs-moodle-orthanc
+    restart: unless-stopped
+    ports:
+      - "${DICOM_PORT:-4242}:4242"   # DICOM 设备直推；8042 不发布
+    volumes:
+      - ../orthanc-docker.json:/etc/orthanc/orthanc.json:ro
+      - orthanc-storage:/var/lib/orthanc/db
+    environment:
+      ORTHANC__REGISTERED_USERS: '{"${EDUPACS_ORTHANC_USER:-edupacs}": "${EDUPACS_ORTHANC_PASS:?请在 .env 中设置 EDUPACS_ORTHANC_PASS}"}'
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    image: ${EDUPACS_APP_IMAGE:-edupacs-moodle-app:1.0.0}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    container_name: edupacs-moodle-app
+    restart: unless-stopped
+    ports:
+      - "${EDUPACS_PORT:-8000}:8000"
+    environment:
+      ORTHANC_URL: http://orthanc:8042
+      ORTHANC_AUTH_USER: ${EDUPACS_ORTHANC_USER:-edupacs}
+      ORTHANC_AUTH_PASS: ${EDUPACS_ORTHANC_PASS:?请在 .env 中设置 EDUPACS_ORTHANC_PASS}
+      EDUPACS_LTI_CONFIG: /edu-pacs/config/lti.json
+      EDUPACS_XAPI_CONFIG: /edu-pacs/config/xapi.json
+      EDUPACS_LTI_PUBLIC_URL: http://${EDUPACS_PUBLIC_HOST:-localhost:8000}
+      EDUPACS_LTI_SERVER_HOST_MAP: http://${MOODLE_PUBLIC_HOST:-localhost:8080}=http://moodle,http://${EDUPACS_PUBLIC_HOST:-localhost:8000}=http://app
+      EDUPACS_XAPI_ENDPOINT: http://lrs:8001/statements
+      EDUPACS_XAPI_AUTH_HEADER: ${XAPI_AUTH_HEADER:?请在 .env 中设置 XAPI_AUTH_HEADER}
+    volumes:
+      - ./runtime/config/lti.json:/edu-pacs/config/lti.json:ro
+      - ./runtime/config/xapi.json:/edu-pacs/config/xapi.json:ro
+      - app-data:/edu-pacs/app/data
+      - orthanc-storage:/edu-pacs/orthanc/storage
+      - ../../backups:/edu-pacs/backups
+    depends_on:
+      - orthanc
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  lrs:
+    image: ${PYTHON_IMAGE:-python:3.12-slim}
+    container_name: edupacs-moodle-lrs
+    restart: unless-stopped
+    command: ["python", "/lrs/lrs.py"]
+    environment:
+      XAPI_AUTH_HEADER: ${XAPI_AUTH_HEADER:?请在 .env 中设置 XAPI_AUTH_HEADER}
+    volumes:
+      - ./lrs:/lrs:ro
+      - lrs-data:/data
+    expose:
+      - "8001"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 一次性引导：在 Moodle 中建课、注册 LTI 1.3 工具、创建阅片活动
+  bootstrap:
+    image: ${MOODLE_IMAGE:-docker.io/bitnami/moodle:4.5}
+    container_name: edupacs-moodle-bootstrap
+    profiles: ["tools"]
+    entrypoint: ["php", "/bootstrap/bootstrap.php"]
+    environment:
+      LTI_CLIENT_ID: ${LTI_CLIENT_ID:?请在 .env 中设置 LTI_CLIENT_ID}
+      EDUPACS_LTI_PUBLIC_URL: http://${EDUPACS_PUBLIC_HOST:-localhost:8000}
+      MOODLE_COURSE_FULLNAME: ${MOODLE_COURSE_FULLNAME:-EduPACS 医学影像诊断学}
+      MOODLE_COURSE_SHORTNAME: ${MOODLE_COURSE_SHORTNAME:-EduPACS2026}
+      DEMO_TEACHER_USER: ${DEMO_TEACHER_USER:-teacher1}
+      DEMO_TEACHER_PASS: ${DEMO_TEACHER_PASS:?请在 .env 中设置 DEMO_TEACHER_PASS}
+      DEMO_STUDENT_USER: ${DEMO_STUDENT_USER:-student1}
+      DEMO_STUDENT_PASS: ${DEMO_STUDENT_PASS:?请在 .env 中设置 DEMO_STUDENT_PASS}
+    volumes:
+      - ./bootstrap:/bootstrap:ro
+      - moodle-app:/bitnami/moodle
+      - moodle-data:/bitnami/moodledata
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      moodle:
+        condition: service_started
+      app:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  moodle-db:
+  moodle-app:
+  moodle-data:
+  orthanc-storage:
+  app-data:
+  lrs-data:

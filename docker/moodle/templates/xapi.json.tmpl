@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "enabled": true,
+  "endpoint": "http://lrs:8001/statements",
+  "auth_header": "__XAPI_AUTH_HEADER__",
+  "platform_iri": "http://__EDUPACS_PUBLIC_HOST__",
+  "platform_name": "EduPACS 教学病例库",
+  "actor_mode": "anonymous",
+  "flush_interval_seconds": 5,
+  "max_attempts": 5,
+  "verbs": {
+    "viewed": "http://adlnet.gov/expapi/verbs/experienced",
+    "viewer_opened": "http://adlnet.gov/expapi/verbs/interacted",
+    "answered": "http://adlnet.gov/expapi/verbs/answered",
+    "graded": "http://adlnet.gov/expapi/verbs/completed"
+  },
+  "verb_display": {
+    "viewed": "浏览病例",
+    "viewer_opened": "打开阅片器",
+    "answered": "作答",
+    "graded": "完成批阅"
+  }
+}

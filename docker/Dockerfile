@@ -31,6 +31,9 @@ COPY app ./app
 COPY tools/smoke_test.py ./tools/smoke_test.py
 COPY tools/backup.py ./tools/backup.py
 COPY config/backup.json ./config/backup.json
+# LTI 1.3 / xAPI 默认配置（compose 会用 runtime/config 覆盖，便于一键集成写入 ID）
+COPY config/lti.json ./config/lti.json
+COPY config/xapi.json ./config/xapi.json
 
 # 上传临时目录（容器内可写，无需持久化）；app/data 与 orthanc/storage 为 volume 挂载点
 RUN mkdir -p .temp/uploads app/data orthanc/storage/config

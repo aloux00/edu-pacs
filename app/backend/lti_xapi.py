@@ -97,6 +97,29 @@ def _norm_url(u: str) -> str:
     return (u or "").strip().rstrip("/")
 
 
+def _server_url(url: str) -> str:
+    """服务端回调地址映射：浏览器用 localhost，容器内要走 compose 服务名。
+
+    EDUPACS_LTI_SERVER_HOST_MAP 形如：
+        http://localhost:8080=http://moodle,http://localhost:8000=http://app
+    只影响后端主动发起的请求（JWKS / token / AGS），不影响 ID Token 的 iss 校验。
+    """
+    text = _norm_url(url)
+    raw = os.environ.get("EDUPACS_LTI_SERVER_HOST_MAP", "")
+    for pair in raw.split(","):
+        if "=" not in pair:
+            continue
+        external, internal = pair.split("=", 1)
+        external = external.strip().rstrip("/")
+        internal = internal.strip().rstrip("/")
+        if not external or not internal:
+            continue
+        if text == external or text.startswith(external + "/"):
+            text = internal + text[len(external):]
+            break
+    return text
+
+
 def _hash_id(*parts: str) -> str:
     return hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
@@ -191,7 +214,7 @@ def _fetch_jwks(url: str, force: bool = False) -> dict:
     hit = _jwks_cache.get(url)
     if hit and hit[0] > time.time() and not force:
         return hit[1]
-    r = http_client.get(url, timeout=8)
+    r = http_client.get(_server_url(url), timeout=8)
     r.raise_for_status()
     data = r.json()
     keys = {k["kid"]: k for k in data.get("keys", []) if k.get("kid")}
@@ -581,7 +604,7 @@ def _worker_loop() -> None:
 
 # ---------------------------------------------------------------- AGS 成绩回传
 def _ags_access_token(reg: dict, sess) -> Optional[str]:
-    token_endpoint = sess["token_endpoint"] or _platform_meta(reg).get("token_endpoint", "")
+    token_endpoint = _server_url(sess["token_endpoint"] or _platform_meta(reg).get("token_endpoint", ""))
     if not token_endpoint:
         return None
     scope = sess["ags_scope"] or AGS_SCORE_SCOPE
@@ -628,7 +651,7 @@ def post_grade_for_user(user_id: int, score: float, max_score: float,
         token = _ags_access_token(reg, sess)
         if not token:
             return False
-        lineitem = sess["ags_lineitem"]
+        lineitem = _server_url(sess["ags_lineitem"])
         payload = {
             "userId": sess["sub"],
             "scoreGiven": float(score),

@@ -12,6 +12,7 @@
 - **字典管理**：系统/模态/难度/疾病名称选项维护，支持 xlsx 模板导入与导出
 - **教学闭环**：盲读模式（作答后解锁要点/诊断/答案）、问答与教师批阅、学习打卡笔记、学情统计
 - **Moodle / LTI 1.3（可选）**：作为 LTI Tool 接入 Moodle，支持 OIDC 单点登录、角色映射、Deep Linking 直接添加病例、AGS 成绩回传；xAPI 语句可送任意 LRS，默认匿名 actor 不泄露 PHI（见 `docs/Moodle集成指南.md`）
+- **Moodle 一键集成栈（Docker）**：`docker/moodle/` 提供 Moodle + MariaDB + EduPACS + Orthanc/OHIF + 内置 LRS 的完整编排，双击 `一键启动.bat` 自动建课、注册 LTI 1.3 工具、回写 Deployment ID 并验证（见 `docker/moodle/docs/Moodle一键集成说明.md`）
 - **图形启动器**：原生 C 启动器（146KB 静态 exe，内嵌多尺寸应用图标，赛博朋克 HUD 界面，状态灯/一键启停/安全停止/CLI 模式 `--status --start --stop`），PowerShell 版作为回退保留。启动器为**系统托盘模式**：任务栏中间无窗口按钮，只在右下角托盘显示图标；点窗口 X 或最小化只是收进托盘（服务照常运行），单击托盘图标显示/隐藏，右键托盘菜单可「显示主窗口 / 一键启动 / 安全停止 / 退出启动器」；重复双击会自动唤起已运行的窗口（单实例）。
 - **跨平台双轨部署**：① Windows 离线安装包（zip + `scripts\install.ps1` 一键安装器，防火墙/快捷方式/开机自启可选）；② Linux 两路线——Ubuntu 原生 apt + systemd（手册 4.4）或 **Docker 离线镜像包**（手册 4.5，官方 orthancteam 镜像 + 自建 app 镜像，内网无外网可部署，安全边界与 Windows 版对齐）
 - **内置备份恢复**：AES-256-GCM 加密归档（.edubak）同机/异机多目的地，网页「备份恢复」页 + CLI `tools\backup.py` 双入口；停机一致性窗口（自动优雅停启 Orthanc）或热备份 WAL 重放，写后自动校验；恢复向导干跑分析→沙箱→正式（回滚保障目录），冒烟 32 项含备份子流程
@@ -44,11 +45,16 @@
 ├── config/                  # backup.json / lti.json / xapi.json（外部配置，无硬编码 URL/密钥）
 ├── scripts/                 # install.ps1 一键安装器 + 图形启动器与启停脚本（UTF-8 BOM）
 ├── docker/                  # Docker 双轨方案：Dockerfile / compose / orthanc 配置 / 离线镜像包构建与部署脚本
+│   └── moodle/              # Moodle + LTI 1.3 + xAPI 一键集成栈（compose / bootstrap / LRS / 一键脚本）
 ├── services/                # WinSW 服务定义与.exe（注册为真正的 Windows 服务）
 ├── tools/                   # 演示 DICOM 生成器、冒烟测试、LTI/xAPI 自测
 ├── docs/                    # 部署与使用手册 + Moodle 集成指南（md + html）
 └── requirements.txt
 ```
+
+## 快速部署（Moodle 一键集成栈，Docker）
+
+进入 `docker/moodle/`，双击 `一键启动.bat`（Linux/macOS：`bash start.sh`）。脚本会自动生成凭据、拉起 Moodle/MariaDB/EduPACS/Orthanc/LRS，在 Moodle 中创建课程与 LTI 1.3 工具并回写 Deployment ID，最后输出访问地址与账号。首次启动需联网拉镜像；详细步骤与排错见 `docker/moodle/docs/Moodle一键集成说明.md`。
 
 ## 快速部署（Windows 内网服务器）
 
