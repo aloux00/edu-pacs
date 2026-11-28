@@ -17,6 +17,7 @@ import sqlite3
 import string
 import time
 import traceback
+import urllib.parse
 import uuid
 import zipfile
 from pathlib import Path
@@ -2205,6 +2206,9 @@ async def _proxy_to_orthanc(request: Request, target_path: str):
             up.close()
 
     out = {k: up.headers[k] for k in _PROXY_RESP_HEADERS if k in up.headers}
+    # 安全响应头：阅片页面在 iframe 中运行，禁止被第三方站点嵌套/引用
+    out.setdefault("X-Content-Type-Options", "nosniff")
+    out.setdefault("X-Frame-Options", "SAMEORIGIN")
     # 去掉会阻止 iframe 嵌入/触发浏览器认证弹窗的头（认证由代理透明完成）
     return StreamingResponse(gen(), status_code=up.status_code, headers=out,
                              media_type=up.headers.get("Content-Type"))
@@ -2285,6 +2289,10 @@ async def _proxy_ohif_js(request: Request, path: str):
 
 @app.api_route("/ohif/{path:path}", methods=["GET", "HEAD"])
 async def proxy_ohif(path: str, request: Request):
+    # 同 dicom-web 代理：拒绝 .. 与百分号编码穿越，防止折叠后越过 /ohif 前缀
+    decoded = urllib.parse.unquote(path)
+    if any(seg == ".." for seg in decoded.lower().split("/")):
+        raise HTTPException(404, "ohif 代理禁止路径穿越")
     if path.endswith(".js"):
         return await _proxy_ohif_js(request, path)
     return await _proxy_to_orthanc(request, f"/ohif/{path}")
@@ -2297,8 +2305,15 @@ async def proxy_dicomweb_root(request: Request):
 
 @app.api_route("/dicom-web/{path:path}", methods=["GET", "HEAD"])
 async def proxy_dicomweb(path: str, request: Request):
-    # 只读路径白名单：仅放行 QIDO/WADO 的 studies/series/instances 子路径
-    if not re.match(r"^(studies|series|instances)(/|$)", path.strip().lower()):
+    # 只读路径白名单：仅放行 QIDO/WADO 的 studies/series/instances 子路径。
+    # 安全：必须先解码百分号编码再检查 .. 段，防止 %2e%2e / ..%2f 绕过；
+    # 并拒绝任何 .. 段，防止 HTTP 客户端/代理把 /dicom-web/studies/../../system
+    # 折叠成 Orthanc 管理端点 /system（白名单形同虚设）。
+    decoded = urllib.parse.unquote(path)
+    segments = decoded.lower().split("/")
+    if any(seg == ".." for seg in segments):
+        raise HTTPException(404, "dicom-web 代理禁止路径穿越")
+    if not re.match(r"^(studies|series|instances)(/|$)", decoded.strip().lower()):
         raise HTTPException(404, "dicom-web 代理仅放行 studies/series/instances 只读子路径")
     return await _proxy_to_orthanc(request, f"/dicom-web/{path}")
 
