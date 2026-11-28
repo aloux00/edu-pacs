@@ -36,12 +36,21 @@ echo [1/5] 生成配置与随机凭据 ...
 %PY% scripts\configure.py --init
 if errorlevel 1 goto :fail
 
+if "%OFFLINE%"=="1" goto :offline_up
+
 echo [2/5] 拉取镜像并构建 EduPACS 应用镜像（首次较慢）...
 docker compose -f docker-compose.moodle.yml pull mariadb moodle orthanc lrs
 if errorlevel 1 goto :fail
 docker compose -f docker-compose.moodle.yml up -d --build
 if errorlevel 1 goto :fail
+goto :after_up
 
+:offline_up
+echo [2/5] 离线模式：跳过镜像拉取与构建（镜像应已通过 load_images 导入）...
+docker compose -f docker-compose.moodle.yml up -d
+if errorlevel 1 goto :fail
+
+:after_up
 echo [3/5] 等待 Moodle 安装并在其中注册 LTI 1.3 工具、创建课程与活动 ...
 docker compose -f docker-compose.moodle.yml --profile tools run --rm bootstrap
 if errorlevel 1 goto :fail

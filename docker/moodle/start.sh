@@ -9,9 +9,14 @@ docker version >/dev/null 2>&1 || { echo "Docker 引擎未启动"; exit 1; }
 
 echo "[1/5] 生成配置与随机凭据"
 "$PY" scripts/configure.py --init
-echo "[2/5] 拉取镜像并构建 EduPACS 应用镜像"
-docker compose -f docker-compose.moodle.yml pull mariadb moodle orthanc lrs
-docker compose -f docker-compose.moodle.yml up -d --build
+if [ "${OFFLINE:-0}" = "1" ]; then
+  echo "[2/5] 离线模式：跳过镜像拉取与构建（镜像应已通过 load_images.sh 导入）"
+  docker compose -f docker-compose.moodle.yml up -d
+else
+  echo "[2/5] 拉取镜像并构建 EduPACS 应用镜像"
+  docker compose -f docker-compose.moodle.yml pull mariadb moodle orthanc lrs
+  docker compose -f docker-compose.moodle.yml up -d --build
+fi
 echo "[3/5] 在 Moodle 中注册 LTI 1.3 工具、创建课程与活动"
 docker compose -f docker-compose.moodle.yml --profile tools run --rm bootstrap
 echo "[4/5] 回写 Deployment ID 并重启 EduPACS 后端"
